@@ -89,9 +89,54 @@ enum ProductLinkFetcher {
             if url.scheme?.lowercased() == "http", !trimmed.lowercased().contains("http://") {
                 url = URL(string: "https://" + url.absoluteString.dropFirst("http://".count)) ?? url
             }
-            if ["http", "https"].contains(url.scheme?.lowercased()), url.host?.contains(".") == true { return url }
+            if ["http", "https"].contains(url.scheme?.lowercased()), url.host?.contains(".") == true { return storeLink(in: url) }
         }
         return nil
+    }
+
+    /// Store apps share "app links" (hollisterco.app.link?…, onelink.me/…) that open the app or the
+    /// App Store, not the product page. Most carry the web page inside them; this pulls it out.
+    static func storeLink(in url: URL) -> URL {
+        guard let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems, !items.isEmpty else { return url }
+        // Branch ($desktop_url…), AppsFlyer (af_web_dp…), Adjust (redirect…), Firebase (link) and plain wrappers.
+        let keys = ["$desktop_url", "$fallback_url", "$canonical_url", "$ios_url", "af_web_dp", "af_r", "redirect",
+                    "redirect_macos", "deep_link_value", "link", "url", "u", "target"]
+        for key in keys {
+            guard let value = items.first(where: { $0.name.lowercased() == key })?.value,
+                  let inner = URL(string: value), ["http", "https"].contains(inner.scheme?.lowercased()),
+                  let host = inner.host, host.contains("."), !isAppLinkHost(host) else { continue }
+            return inner
+        }
+        return url
+    }
+
+    /// Hosts that only bounce to an app or the App Store.
+    static func isAppLinkHost(_ host: String) -> Bool {
+        let h = host.lowercased()
+        return [".app.link", ".test-app.link", ".page.link", ".onelink.me", ".adj.st", ".sng.link", ".bnc.lt", ".app.goo.gl"]
+            .contains { h.hasSuffix($0) || h == String($0.dropFirst()) }
+    }
+
+    /// A short app link with nothing inside it ("hollisterco.app.link/AbC123"): ask for it as a desktop
+    /// browser, which these services send on to the store's web page.
+    private static func resolveAppLink(_ url: URL) async -> URL {
+        guard let host = url.host, isAppLinkHost(host) else { return url }
+        var request = URLRequest(url: url, timeoutInterval: 8)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+                         forHTTPHeaderField: "User-Agent")
+        guard let (data, response) = try? await URLSession.shared.data(for: request) else { return url }
+        if let final = response.url, let h = final.host, !isAppLinkHost(h) { return storeLink(in: final) }
+        // Some answer with a page that names the destination instead of redirecting.
+        let html = String(decoding: data.prefix(300_000), as: UTF8.self)
+        for pattern in [#"\$desktop_url"\s*:\s*"([^"]+)""#, #"<meta[^>]+property="og:url"[^>]+content="([^"]+)""#,
+                        #"http-equiv="refresh"[^>]+url=([^"'>]+)"#] {
+            if let found = matches(pattern, in: html).first,
+               let target = URL(string: decode(found).replacingOccurrences(of: "\\/", with: "/")),
+               let h = target.host, !isAppLinkHost(h), ["http", "https"].contains(target.scheme?.lowercased()) {
+                return storeLink(in: target)
+            }
+        }
+        return url
     }
 
     // MARK: Reading the page
@@ -99,7 +144,8 @@ enum ProductLinkFetcher {
     /// The page's product data and its best photo.
     @MainActor
     static func read(_ text: String) async throws -> (ProductPage, UIImage?) {
-        guard let url = extractURL(text) else { throw FetchError.badURL }
+        guard var url = extractURL(text) else { throw FetchError.badURL }
+        url = await resolveAppLink(url)
         let host = url.host?.replacingOccurrences(of: "www.", with: "") ?? "That store"
 
         // Fast path: many stores serve the product data in plain HTML.

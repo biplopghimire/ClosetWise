@@ -32,6 +32,22 @@ struct GarmentCanvas: View {
     }
 }
 
+/// Just the hanger (bar and hook), in the same frame GarmentCanvas uses, so a real photo can hang on it.
+struct HangerCanvas: View {
+    var style: HangerStyle = .wood
+    var headroom: CGFloat = 0
+
+    var body: some View {
+        Canvas { ctx, size in
+            let box = GarmentKind.shirt.canvas
+            let s = min(size.width / box.width, size.height / (box.height + headroom))
+            ctx.translateBy(x: (size.width - box.width * s) / 2, y: headroom * s)
+            ctx.scaleBy(x: s, y: s)
+            GarmentPainter(kind: .shirt, color: .clear, trim: .clear, blur: 0).paintHanger(&ctx, style: style)
+        }
+    }
+}
+
 private struct GarmentPainter {
     let kind: GarmentKind
     let color: Color
@@ -164,7 +180,7 @@ private struct GarmentPainter {
 
     // MARK: Hanger
 
-    private func paintHanger(_ ctx: inout GraphicsContext, style: HangerStyle) {
+    func paintHanger(_ ctx: inout GraphicsContext, style: HangerStyle) {
         let bar = p(GarmentArtLibrary.bar)
         ctx.stroke(bar.offsetBy(dx: 0.6, dy: 1.6), with: .color(.black.opacity(0.25)), style: StrokeStyle(lineWidth: 9.5, lineCap: .round))
         let shading: GraphicsContext.Shading = style == .wood

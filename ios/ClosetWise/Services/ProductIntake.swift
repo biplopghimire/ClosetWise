@@ -69,10 +69,13 @@ enum AttributeGuesser {
         if has(t, ["sneaker", "trainer", "loafer", "boot", "shoe", "sandal", "mule", "heel", "flat"]) { return .shoes }
         if has(t, ["coat", "trench", "parka", "overcoat", "puffer"]) { return .coat }
         if has(t, ["jacket", "blazer", "overshirt", "bomber", "shacket", "gilet"]) { return .jacket }
+        // A polo sweatshirt has a collar, not a hood.
+        if has(t, ["polo"]) && has(t, ["sweatshirt", "fleece", "sweater", "knit"]) { return .knit }
+        if has(t, ["sweatpant", "trackpant", "track pant", "jogger", "slacks"]) { return .trousers }
         if has(t, ["hoodie", "sweatshirt", "zip-up"]) { return .hoodie }
         if has(t, ["shorts"]) { return .shorts }
         if has(t, ["skirt"]) { return .skirt }
-        if has(t, ["jean", "trouser", "pant", "chino", "legging", "jogger", "cargo"]) { return .trousers }
+        if has(t, ["jean", "trouser", "pant", "chino", "legging", "jogger", "cargo", "bottom"]) { return .trousers }
         if has(t, ["polo"]) { return .shirt }
         if has(t, ["shirt", "blouse", "oxford", "button"]) && !has(t, ["t-shirt", "tshirt"]) { return .shirt }
         if has(t, ["sweater", "jumper", "cardigan", "knit", "pullover", "turtleneck", "long sleeve", "ribbed"]) { return .knit }
