@@ -117,7 +117,7 @@ struct ClosetView: View {
         .onChange(of: store.dislikedCombos) { feed.drop(disliked: store.dislikedCombos) }
         .sheet(item: $detail) { item in
             GarmentDetailView(
-                item: item,
+                item: store.item(item.id) ?? item,   // live, so a photo picked after Buy shows straight away
                 index: items.firstIndex(of: item) ?? 0,
                 total: items.count,
                 outfits: store.outfits(with: item)
@@ -170,6 +170,7 @@ struct ClosetView: View {
                     HStack(alignment: .bottom, spacing: 12) {
                         ForEach(pieces) { item in
                             Button { detail = item } label: {
+                                // The real photo when there is one, otherwise the drawing.
                                 ItemArtwork(item: item)
                                     .frame(width: 80, height: itemHeight)
                                     .shadow(color: .black.opacity(0.14), radius: 3, x: 1, y: 3)

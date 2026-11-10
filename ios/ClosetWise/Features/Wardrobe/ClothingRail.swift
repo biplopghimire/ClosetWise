@@ -52,6 +52,10 @@ struct ClothingRail: View {
             selected = item.id
             proxy.scrollTo(item.id, anchor: .center)
         }
+        // The piece widens as it turns; at the end of the rail there was no room to centre it yet.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) { proxy.scrollTo(item.id, anchor: .center) }
+        }
         if index > 0 { kicks[items[index - 1].id, default: SwingKick()].next(-1) }
         if index + 1 < items.count { kicks[items[index + 1].id, default: SwingKick()].next(1) }
     }
@@ -91,12 +95,37 @@ private struct RailSlot: View {
     private var slotWidth: CGFloat { (isFront ? 0.94 : item.kind.sideWidth) * width + height * 0.035 }
     private var hookAnchor: UnitPoint { UnitPoint(x: 0.5, y: ClothingRail.headroom / (310 + ClothingRail.headroom)) }
 
+    /// Turned to face you, a piece shows its real photo on the hanger; otherwise its drawing.
+    @ViewBuilder private var front: some View {
+        if let name = item.photo, ClosetStore.photo(name) != nil {
+            if ClosetStore.isCutout(name) {
+                // A cut-out hangs like the drawing: hanger behind, inside the collar.
+                ZStack(alignment: .top) {
+                    HangerCanvas(style: .wood, headroom: ClothingRail.headroom)
+                    GarmentPiece(item: item)
+                        .frame(width: width * 0.88, height: 252 * scale, alignment: .top)
+                        .padding(.top, (ClothingRail.headroom + 38) * scale)
+                }
+            } else {
+                // A photo with its background is clipped onto the hanger's bar.
+                ZStack(alignment: .top) {
+                    GarmentPiece(item: item)
+                        .frame(width: width * 0.8, height: 240 * scale, alignment: .top)
+                        .padding(.top, (ClothingRail.headroom + 46) * scale)
+                    HangerCanvas(style: .wood, headroom: ClothingRail.headroom)
+                }
+            }
+        } else {
+            GarmentCanvas(kind: item.kind, face: .front, color: item.swatch, hanger: .wood, headroom: ClothingRail.headroom)
+        }
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             GarmentCanvas(kind: item.kind, face: .side, color: item.swatch, hanger: .wood, headroom: ClothingRail.headroom)
                 .rotation3DEffect(.degrees(isFront ? -84 : 0), axis: (0, 1, 0), perspective: 0.5)
                 .opacity(isFront ? 0 : 1)
-            GarmentCanvas(kind: item.kind, face: .front, color: item.swatch, hanger: .wood, headroom: ClothingRail.headroom)
+            front
                 .rotation3DEffect(.degrees(isFront ? 0 : -70), axis: (0, 1, 0), perspective: 0.5)
                 .brightness(isFront ? 0 : -0.12)
                 .opacity(isFront ? 1 : 0)
