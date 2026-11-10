@@ -6,7 +6,12 @@ struct ClosetWiseApp: App {
     @State private var router = AppRouter()
     @Environment(\.scenePhase) private var scenePhase
 
-    init() { FrameHitchMonitor.startIfRequested() }
+    init() {
+        FrameHitchMonitor.startIfRequested()
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-checkLink") { _router = State(initialValue: { let r = AppRouter(); r.tab = .check; return r }()) }
+        #endif
+    }
 
     var body: some Scene {
         WindowGroup {

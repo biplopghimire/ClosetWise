@@ -15,7 +15,7 @@ enum ItemReader {
 
     static func linkTask() -> GeminiTask {
         GeminiTask(title: "ClosetWise is window-shopping", steps: [
-            "Peeking at the product page",
+            "Peeking at the product page (some stores take a few seconds)",
             "Taking it off the hanger (removing the background)",
             "Sizing it up — type, colour and fit",
             "Laying it out for you to check",
@@ -46,25 +46,45 @@ enum ItemReader {
 
     static func read(link: String, store: ClosetStore, task: GeminiTask) async throws -> (WardrobeItem, ConfirmRequest.Source) {
         task.step(0)
-        let draft = try await ProductLinkFetcher.fetch(link)
-        var item = AttributeGuesser.guess(draft)
-        var source = ConfirmRequest.Source.link(draft.store ?? "the store")
-        if let image = draft.image {
+        let (page, image) = try await ProductLinkFetcher.read(link)
+        let listing = ProductLinkFetcher.draft(from: page)
+        let storeName = page.store ?? "the store"
+
+        var cut: UIImage?
+        if let image {
             task.step(1)
-            let cut = await GarmentPhoto.cutout(image) ?? image
-            task.step(2)
-            if let gemini = await GarmentPhoto.geminiAttributes(image) {
-                item = merge(gemini, into: item)
-                source = .gemini
-            } else {
-                task.skip(2)
-            }
-            item.photo = store.savePhoto(cut)
+            cut = await GarmentPhoto.cutout(image) ?? image
         } else {
-            task.skip(1); task.skip(2)
+            task.skip(1)
         }
+
+        task.step(2)
+        var item: WardrobeItem
+        var source: ConfirmRequest.Source
+        if let reading = await GarmentPhoto.geminiProduct(page, image: image) {
+            guard reading.isProduct else { throw ProductLinkFetcher.FetchError.notAProduct }
+            item = reading.item
+            // Exact structured price first; otherwise ClosetWise's reading of the price label (it can tell
+            // a sale price from a crossed-out one), then the label's first amount.
+            item.price = ProductLinkFetcher.structuredPrice(page) ?? reading.price ?? listing.price
+            item.store = storeName
+            source = .gemini
+        } else {
+            // ClosetWise couldn't be reached: go on what the listing says.
+            task.step(2, title: "No fitting room free — reading the listing on your phone")
+            guard !listing.name.isEmpty else { throw ProductLinkFetcher.FetchError.nothingFound(storeName) }
+            item = AttributeGuesser.guess(listing)
+            if let cut, let color = DominantColor.of(cut), listing.colorText == nil {
+                item.hex = color.hex
+                item.color = color.name
+            }
+            source = .link(storeName)
+        }
+
         task.step(3)
-        task.succeed(source == .gemini ? "All measured up — check the details." : "Pulled from the listing — check the fit and type.")
+        if let cut { item.photo = store.savePhoto(cut) }
+        let price = item.price.map { " · \($0.dollars)" } ?? ""
+        task.succeed(source == .gemini ? "Found it at \(storeName)\(price) — check the details." : "Pulled from the listing — check the fit and type.")
         return (item, source)
     }
 

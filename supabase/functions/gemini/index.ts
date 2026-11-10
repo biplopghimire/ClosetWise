@@ -12,6 +12,8 @@
 //     → { verdict, explanation, style_notes }
 //   { "action": "detect_outfit", image_base64, closet: [{ id, name, category, color, fit, silhouette }] }
 //     → { matches: [{ item_id, confidence }], not_in_closet: [string] }
+//   { "action": "read_product", page: { url, title, structured, meta, text }, image_base64? }
+//     → { product: { is_product, name, brand, price, currency, ...attribute fields } }
 //
 // Secrets: GEMINI_API_KEY (required), GEMINI_FLASH_MODEL, GEMINI_EMBED_MODEL (optional overrides).
 
@@ -46,6 +48,33 @@ const ATTRIBUTE_SCHEMA = {
   },
   required: ["name", "category", "color", "material", "fit", "silhouette", "style", "formality", "seasons"],
 };
+
+/** A product page, read: the attribute fields plus what only the listing knows. */
+const PRODUCT_SCHEMA = {
+  type: "object",
+  properties: {
+    is_product: {
+      type: "boolean",
+      description: "true only if this is one clothing, shoe or accessory product. false for blocked pages, captchas, search or category pages, carts, non-fashion products.",
+    },
+    not_product_reason: { type: "string", description: "If is_product is false: blocked, captcha, category, search, not_fashion, or other." },
+    name: { type: "string", description: "The product's own name, short, without the store name or SEO filler, e.g. 'Relaxed linen shirt'." },
+    brand: { type: "string" },
+    price: { type: "number", description: "Current selling price as a number (sale price if on sale). 0 if unknown." },
+    currency: { type: "string", description: "ISO currency code, e.g. USD." },
+    ...ATTRIBUTE_SCHEMA.properties,
+  },
+  required: [...new Set(["is_product", "name", "price", "currency", ...ATTRIBUTE_SCHEMA.required])],
+};
+
+const PRODUCT_PROMPT = `You are reading an online store's product page for a shopper who wants to know how the item
+fits their existing wardrobe. Below is what their phone read from the page: structured data (schema.org JSON-LD),
+meta tags, and the visible text. If a photo is attached it is the product's main image.
+Extract the single product being sold. Use the structured data for name, brand and price when present;
+otherwise read them from the text. Take colour and material from the selected variant or description.
+Judge fit and silhouette from the description and photo (words like oversized, relaxed, slim, boxy, cropped, wide-leg)
+rather than from size labels. If the page is an access-denied/robot check, a search or category listing,
+or not a fashion item, set is_product to false. Use common, lowercase fashion terms.`;
 
 const STYLE_SCHEMA = {
   type: "object",
@@ -198,6 +227,20 @@ Deno.serve(async (req) => {
       const known = new Set(closet.map((c: { id: string }) => c.id));
       result.matches = (result.matches ?? []).filter((m: { item_id: string }) => known.has(m.item_id));
       return json(result);
+    }
+
+    if (action === "read_product") {
+      const page = body.page ?? {};
+      const trimmed = {
+        url: String(page.url ?? "").slice(0, 500),
+        title: String(page.title ?? "").slice(0, 300),
+        structured: (page.structured ?? []).slice(0, 4).map((s: string) => String(s).slice(0, 6000)),
+        meta: page.meta ?? {},
+        text: String(page.text ?? "").slice(0, 8000),
+      };
+      const parts: unknown[] = [{ text: PRODUCT_PROMPT }, { text: `Page JSON:\n${JSON.stringify(trimmed)}` }];
+      if (body.image_base64) parts.push({ inline_data: { mime_type: body.mime_type ?? "image/jpeg", data: body.image_base64 } });
+      return json({ product: await generateJSON(parts, PRODUCT_SCHEMA) });
     }
 
     if (action === "judge_purchase") {

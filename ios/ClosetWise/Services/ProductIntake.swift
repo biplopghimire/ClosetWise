@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Supabase
 import UIKit
 import Vision
@@ -15,104 +16,6 @@ struct ProductDraft {
     var description: String?
     var imageURL: URL?
     var image: UIImage?
-}
-
-// MARK: - Product links
-
-/// Reads a product page on the device: schema.org Product JSON-LD first, then Open Graph tags.
-enum ProductLinkFetcher {
-    enum FetchError: LocalizedError {
-        case badURL, blocked(Int), nothingFound
-        var errorDescription: String? {
-            switch self {
-            case .badURL: "That doesn't look like a product link."
-            case .blocked(let code): "The store didn't let us read that page (\(code)). Try a screenshot or photo instead."
-            case .nothingFound: "Couldn't find product details on that page. Try a screenshot or photo instead."
-            }
-        }
-    }
-
-    static func fetch(_ text: String) async throws -> ProductDraft {
-        guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)), url.scheme?.hasPrefix("http") == true else {
-            throw FetchError.badURL
-        }
-        var request = URLRequest(url: url, timeoutInterval: 15)
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
-        request.setValue("text/html", forHTTPHeaderField: "Accept")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { throw FetchError.blocked(http.statusCode) }
-        let html = String(decoding: data, as: UTF8.self)
-
-        var draft = parse(html: html, baseURL: url)
-        draft.store = draft.store ?? url.host?.replacingOccurrences(of: "www.", with: "")
-        guard !draft.name.isEmpty else { throw FetchError.nothingFound }
-        if let imageURL = draft.imageURL, let (imageData, _) = try? await URLSession.shared.data(from: imageURL) {
-            draft.image = UIImage(data: imageData)
-        }
-        return draft
-    }
-
-    static func parse(html: String, baseURL: URL?) -> ProductDraft {
-        var draft = ProductDraft()
-
-        // JSON-LD
-        for block in matches(#"<script[^>]*type=["']application/ld\+json["'][^>]*>([\s\S]*?)</script>"#, in: html) {
-            guard let data = block.data(using: .utf8), let json = try? JSONSerialization.jsonObject(with: data) else { continue }
-            if let product = findProduct(json) {
-                draft.name = (product["name"] as? String) ?? draft.name
-                draft.description = product["description"] as? String
-                draft.colorText = product["color"] as? String
-                draft.material = product["material"] as? String
-                if let brand = product["brand"] as? [String: Any] { draft.brand = brand["name"] as? String }
-                else { draft.brand = product["brand"] as? String }
-                draft.imageURL = imageURL(product["image"], base: baseURL)
-                let offers = (product["offers"] as? [String: Any]) ?? (product["offers"] as? [[String: Any]])?.first
-                if let p = offers?["price"] ?? offers?["lowPrice"] { draft.price = Decimal(string: "\(p)") }
-                break
-            }
-        }
-
-        // Open Graph fallback
-        func meta(_ key: String) -> String? {
-            matches(#"<meta[^>]+(?:property|name)=["']\#(key)["'][^>]*content=["']([^"']*)["']"#, in: html).first
-                ?? matches(#"<meta[^>]+content=["']([^"']*)["'][^>]*(?:property|name)=["']\#(key)["']"#, in: html).first
-        }
-        if draft.name.isEmpty { draft.name = decode(meta("og:title") ?? matches(#"<title>([^<]*)</title>"#, in: html).first ?? "") }
-        if draft.imageURL == nil, let img = meta("og:image") { draft.imageURL = URL(string: img, relativeTo: baseURL) }
-        if draft.price == nil, let p = meta("product:price:amount") ?? meta("og:price:amount") { draft.price = Decimal(string: p) }
-        if draft.description == nil { draft.description = meta("og:description").map(decode) }
-        draft.store = meta("og:site_name")
-        return draft
-    }
-
-    private static func findProduct(_ json: Any) -> [String: Any]? {
-        if let dict = json as? [String: Any] {
-            let type = dict["@type"]
-            if (type as? String) == "Product" || (type as? [String])?.contains("Product") == true { return dict }
-            if let graph = dict["@graph"] { return findProduct(graph) }
-        }
-        if let array = json as? [Any] { for element in array { if let p = findProduct(element) { return p } } }
-        return nil
-    }
-
-    private static func imageURL(_ value: Any?, base: URL?) -> URL? {
-        if let s = value as? String { return URL(string: s, relativeTo: base) }
-        if let a = value as? [Any] { return imageURL(a.first, base: base) }
-        if let d = value as? [String: Any] { return imageURL(d["url"] ?? d["contentUrl"], base: base) }
-        return nil
-    }
-
-    private static func matches(_ pattern: String, in text: String) -> [String] {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
-        return regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap {
-            Range($0.range(at: 1), in: text).map { String(text[$0]) }
-        }
-    }
-
-    private static func decode(_ s: String) -> String {
-        s.replacingOccurrences(of: "&amp;", with: "&").replacingOccurrences(of: "&#39;", with: "'")
-            .replacingOccurrences(of: "&quot;", with: "\"").trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 }
 
 // MARK: - Attribute guessing (offline)
@@ -170,6 +73,7 @@ enum AttributeGuesser {
         if has(t, ["shorts"]) { return .shorts }
         if has(t, ["skirt"]) { return .skirt }
         if has(t, ["jean", "trouser", "pant", "chino", "legging", "jogger", "cargo"]) { return .trousers }
+        if has(t, ["polo"]) { return .shirt }
         if has(t, ["shirt", "blouse", "oxford", "button"]) && !has(t, ["t-shirt", "tshirt"]) { return .shirt }
         if has(t, ["sweater", "jumper", "cardigan", "knit", "pullover", "turtleneck", "long sleeve", "ribbed"]) { return .knit }
         return .tee
@@ -245,19 +149,70 @@ enum GarmentPhoto {
         guard let client = SupabaseService.client, await Cloud.shared.ensureSession() != nil,
               let jpeg = image.resized(maxSide: 1024).jpegData(compressionQuality: 0.8) else { return nil }
         struct Request: Encodable { let action = "attributes"; let image_base64: String; let mime_type = "image/jpeg" }
-        struct Attributes: Decodable {
-            let name: String; let category: String; let color: String; let material: String; let fit: String
-            let silhouette: String?; let style: String; let formality: Int
-        }
-        struct Response: Decodable { let attributes: Attributes }
+        struct Response: Decodable { let attributes: GeminiAttributes }
         guard let response: Response = try? await client.functions.invoke(
             "gemini", options: FunctionInvokeOptions(body: Request(image_base64: jpeg.base64EncodedString()))
         ) else { return nil }
-        let a = response.attributes
-        let kind = AttributeGuesser.guessKind("\(a.name) \(a.category)")
-        let color = ColorMath.normalize(a.color) ?? ("black", 0x1D1D1F)
-        return WardrobeItem(name: a.name.capitalized, category: ItemCategory(rawValue: a.category) ?? AttributeGuesser.category(for: kind),
-                            kind: kind, color: color.name, hex: color.hex, material: a.material,
-                            fit: FitType(rawValue: a.fit) ?? .regular, silhouette: a.silhouette, style: a.style, formality: a.formality)
+        return response.attributes.item
     }
+
+    /// What ClosetWise made of a product page: the item, plus what only the listing knows.
+    struct ProductReading {
+        var isProduct: Bool
+        var item: WardrobeItem
+        var brand: String?
+        var price: Decimal?
+    }
+
+    /// Sends what the phone read off a product page (and its photo) to ClosetWise to read like a shopper would.
+    static func geminiProduct(_ page: ProductPage, image: UIImage?) async -> ProductReading? {
+        guard let client = SupabaseService.client, await Cloud.shared.ensureSession() != nil else { return nil }
+        struct Request: Encodable { let action = "read_product"; let page: ProductPage; let image_base64: String?; let mime_type = "image/jpeg" }
+        struct Product: Decodable {
+            let is_product: Bool; let brand: String?; let price: Double?; let currency: String?
+            let attributes: GeminiAttributes
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: Keys.self)
+                is_product = try c.decodeIfPresent(Bool.self, forKey: .is_product) ?? true
+                brand = try c.decodeIfPresent(String.self, forKey: .brand)
+                price = try c.decodeIfPresent(Double.self, forKey: .price)
+                currency = try c.decodeIfPresent(String.self, forKey: .currency)
+                attributes = try GeminiAttributes(from: decoder)
+            }
+            enum Keys: String, CodingKey { case is_product, brand, price, currency }
+        }
+        struct Response: Decodable { let product: Product }
+        let jpeg = image?.resized(maxSide: 1024).jpegData(compressionQuality: 0.8)?.base64EncodedString()
+        let response: Response
+        do {
+            response = try await client.functions.invoke("gemini", options: FunctionInvokeOptions(body: Request(page: page, image_base64: jpeg)))
+        } catch {
+            var detail = String(describing: error)
+            if case let FunctionsError.httpError(code, data) = error { detail = "\(code): \(String(decoding: data, as: UTF8.self))" }
+            Logger(subsystem: "app.closetwise", category: "links").error("read_product failed: \(detail, privacy: .public)")
+            return nil
+        }
+        let p = response.product
+        let brand = p.brand.flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
+        return ProductReading(isProduct: p.is_product, item: p.attributes.item, brand: brand,
+                              price: p.price.flatMap { $0 > 0 ? Decimal(string: String(format: "%.2f", $0)) : nil })
+    }
+}
+
+/// Item fields as ClosetWise (Gemini) returns them.
+struct GeminiAttributes: Decodable {
+    let name: String; let category: String; let color: String; let material: String; let fit: String
+    let silhouette: String?; let style: String; let formality: Int
+    let subcategory: String?
+
+    var item: WardrobeItem {
+        // The type guesser matches lowercase words; subcategory ("polo shirt", "chinos") is the strongest hint.
+        let kind = AttributeGuesser.guessKind("\(subcategory ?? "") \(name) \(category) \(silhouette ?? "")".lowercased())
+        let color = ColorMath.normalize(self.color) ?? ("black", 0x1D1D1F)
+        return WardrobeItem(name: name.prefix(1).uppercased() + name.dropFirst(), category: ItemCategory(rawValue: category) ?? AttributeGuesser.category(for: kind),
+                            kind: kind, color: color.name, hex: color.hex, material: material,
+                            fit: FitType(rawValue: fit) ?? .regular, silhouette: silhouette, style: style,
+                            formality: min(5, max(1, formality)))
+    }
+
 }
