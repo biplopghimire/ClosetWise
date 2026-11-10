@@ -61,6 +61,9 @@ struct WardrobeItem: Identifiable, Hashable, Codable {
     var store: String?
     /// When this phone last changed the item; sync keeps whichever copy is newer.
     var updatedAt: Date?
+    /// The store listing's photo links, kept from a link check. If the item is bought, ClosetWise picks
+    /// the one that shows just the item for the closet photo, then this is cleared.
+    var photoOptions: [String]?
 
     init(id: UUID = UUID(), name: String, category: ItemCategory, kind: GarmentKind, color: String, hex: UInt32,
          material: String, fit: FitType, silhouette: String? = nil, style: String, formality: Int = 2,

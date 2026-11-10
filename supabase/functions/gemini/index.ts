@@ -12,6 +12,10 @@
 //     → { verdict, explanation, style_notes }
 //   { "action": "detect_outfit", image_base64, closet: [{ id, name, category, color, fit, silhouette }] }
 //     → { matches: [{ item_id, confidence }], not_in_closet: [string] }
+//   { "action": "read_product", page: { url, title, structured, meta, text }, image_base64? }
+//     → { product: { is_product, name, brand, price, currency, ...attribute fields } }
+//   { "action": "pick_product_photo", name, category, images: ["<base64 jpeg>", …] }
+//     → { index, shows, box_2d: [ymin, xmin, ymax, xmax] (0–1000) }
 //
 // Secrets: GEMINI_API_KEY (required), GEMINI_FLASH_MODEL, GEMINI_EMBED_MODEL (optional overrides).
 
@@ -46,6 +50,61 @@ const ATTRIBUTE_SCHEMA = {
   },
   required: ["name", "category", "color", "material", "fit", "silhouette", "style", "formality", "seasons"],
 };
+
+/** A product page, read: the attribute fields plus what only the listing knows. */
+const PRODUCT_SCHEMA = {
+  type: "object",
+  properties: {
+    is_product: {
+      type: "boolean",
+      description: "true only if this is one clothing, shoe or accessory product. false for blocked pages, captchas, search or category pages, carts, non-fashion products.",
+    },
+    not_product_reason: { type: "string", description: "If is_product is false: blocked, captcha, category, search, not_fashion, or other." },
+    name: { type: "string", description: "The product's own name, short, without the store name or SEO filler, e.g. 'Relaxed linen shirt'." },
+    brand: { type: "string" },
+    price: { type: "number", description: "Current selling price as a number (sale price if on sale). 0 if unknown." },
+    currency: { type: "string", description: "ISO currency code, e.g. USD." },
+    ...ATTRIBUTE_SCHEMA.properties,
+  },
+  required: [...new Set(["is_product", "name", "price", "currency", ...ATTRIBUTE_SCHEMA.required])],
+};
+
+const PRODUCT_PROMPT = `You are reading an online store's product page for a shopper who wants to know how the item
+fits their existing wardrobe. Below is what their phone read from the page: structured data (schema.org JSON-LD),
+meta tags, and the visible text. If a photo is attached it is the product's main image.
+Extract the single product being sold. Use the structured data for name, brand and price when present;
+otherwise read them from the text. Take colour and material from the selected variant or description.
+Judge fit and silhouette from the description and photo (words like oversized, relaxed, slim, boxy, cropped, wide-leg)
+rather than from size labels. If the page is an access-denied/robot check, a search or category listing,
+or not a fashion item, set is_product to false. Use common, lowercase fashion terms.`;
+
+/** Which listing photo to keep for the closet, and where the item is in it. */
+const PHOTO_SCHEMA = {
+  type: "object",
+  properties: {
+    index: { type: "integer", description: "0-based index of the chosen photo." },
+    shows: {
+      type: "string",
+      enum: ["item_only", "on_model", "detail", "other"],
+      description: "item_only: flat lay, on a hanger, ghost mannequin or packshot. on_model: worn by a person.",
+    },
+    box_2d: {
+      type: "array",
+      items: { type: "integer" },
+      minItems: 4,
+      maxItems: 4,
+      description: "[ymin, xmin, ymax, xmax] on a 0–1000 scale around just this item (not the whole person or other garments).",
+    },
+  },
+  required: ["index", "shows", "box_2d"],
+};
+
+const PHOTO_PROMPT = `These photos come from an online store's listing. The shopper bought the item described below
+and wants one clean picture of it for their digital closet.
+Pick the photo that shows this item by itself — a flat lay, on a hanger, on a ghost mannequin or a packshot —
+from the front, whole and in focus. Skip close-ups of fabric or labels, and photos of other products.
+If every photo is on a model, pick the one where this item is most fully visible and least covered.
+Then give box_2d around just this item in that photo (for a shirt on a model: the shirt, not the trousers or the face).`;
 
 const STYLE_SCHEMA = {
   type: "object",
@@ -197,6 +256,36 @@ Deno.serve(async (req) => {
       ], OUTFIT_SCHEMA);
       const known = new Set(closet.map((c: { id: string }) => c.id));
       result.matches = (result.matches ?? []).filter((m: { item_id: string }) => known.has(m.item_id));
+      return json(result);
+    }
+
+    if (action === "read_product") {
+      const page = body.page ?? {};
+      const trimmed = {
+        url: String(page.url ?? "").slice(0, 500),
+        title: String(page.title ?? "").slice(0, 300),
+        structured: (page.structured ?? []).slice(0, 4).map((s: string) => String(s).slice(0, 6000)),
+        meta: page.meta ?? {},
+        text: String(page.text ?? "").slice(0, 8000),
+      };
+      const parts: unknown[] = [{ text: PRODUCT_PROMPT }, { text: `Page JSON:\n${JSON.stringify(trimmed)}` }];
+      if (body.image_base64) parts.push({ inline_data: { mime_type: body.mime_type ?? "image/jpeg", data: body.image_base64 } });
+      return json({ product: await generateJSON(parts, PRODUCT_SCHEMA) });
+    }
+
+    if (action === "pick_product_photo") {
+      const images: string[] = (body.images ?? []).slice(0, 8);
+      if (images.length === 0) return json({ error: "images required" }, 400);
+      const parts: unknown[] = [
+        { text: PHOTO_PROMPT },
+        { text: `Item: ${String(body.name ?? "").slice(0, 200)} (${String(body.category ?? "")})` },
+      ];
+      images.forEach((data, i) => {
+        parts.push({ text: `Photo ${i}:` });
+        parts.push({ inline_data: { mime_type: "image/jpeg", data } });
+      });
+      const result = await generateJSON(parts, PHOTO_SCHEMA);
+      result.index = Math.min(Math.max(0, Number(result.index) || 0), images.length - 1);
       return json(result);
     }
 

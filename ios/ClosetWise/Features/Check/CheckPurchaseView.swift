@@ -1,5 +1,6 @@
 import PhotosUI
 import SwiftUI
+import os
 
 /// Screen 4 · Check a purchase — from a link, a photo/screenshot, or details typed in.
 struct CheckPurchaseView: View {
@@ -37,6 +38,9 @@ struct CheckPurchaseView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .toolbar(.hidden, for: .navigationBar)
+        #if DEBUG
+        .task { debugCheckLinkIfRequested() }
+        #endif
         .navigationDestination(item: $confirm) { request in
             ConfirmProductView(request: request) { confirm = nil }
         }
@@ -139,6 +143,16 @@ struct CheckPurchaseView: View {
 
     // MARK: Actions
 
+    #if DEBUG
+    /// Link-check testing: `-checkLink <url>` runs a check on launch and logs what came back.
+    private func debugCheckLinkIfRequested() {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-checkLink"), i + 1 < args.count, link.isEmpty else { return }
+        link = args[i + 1]
+        checkLink()
+    }
+    #endif
+
     private func checkLink() {
         guard !link.isEmpty, !busy else { return }
         linkFocused = false
@@ -147,9 +161,17 @@ struct CheckPurchaseView: View {
         task.begin()
         Task {
             do {
+                let started = Date()
                 let (item, source) = try await ItemReader.read(link: link, store: store, task: task)
+                #if DEBUG
+                Logger(subsystem: "app.closetwise", category: "links").notice(
+                    "LINKCHECK ok \(String(format: "%.1f", Date().timeIntervalSince(started)), privacy: .public)s source=\(String(describing: source), privacy: .public) name=\(item.name, privacy: .public) kind=\(item.kind.rawValue, privacy: .public) color=\(item.color, privacy: .public) fit=\(item.fit.rawValue, privacy: .public) cut=\(item.silhouette ?? "-", privacy: .public) material=\(item.material, privacy: .public) price=\(item.price.map { "\($0)" } ?? "-", privacy: .public) photo=\(item.photo != nil, privacy: .public)")
+                #endif
                 await open(ConfirmRequest(item: item, source: source))
             } catch {
+                #if DEBUG
+                Logger(subsystem: "app.closetwise", category: "links").notice("LINKCHECK failed: \(error.localizedDescription, privacy: .public)")
+                #endif
                 task.fail(error.localizedDescription)
             }
         }

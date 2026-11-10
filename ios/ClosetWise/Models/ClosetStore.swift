@@ -262,6 +262,37 @@ final class ClosetStore {
         return image
     }
 
+    private static var cutoutFlags: [String: Bool] = [:]
+
+    /// True when the photo is a cut-out (background removed, transparent corners) rather than a
+    /// photo with its background still in it. Checked once per photo.
+    static func isCutout(_ name: String) -> Bool {
+        if let known = cutoutFlags[name] { return known }
+        let result = photo(name).map(hasTransparentCorners) ?? false
+        cutoutFlags[name] = result
+        return result
+    }
+
+    private static func hasTransparentCorners(_ image: UIImage) -> Bool {
+        guard let cg = image.cgImage else { return false }
+        switch cg.alphaInfo {
+        case .none, .noneSkipFirst, .noneSkipLast: return false
+        default: break
+        }
+        let side = 16
+        var pixels = [UInt8](repeating: 0, count: side * side * 4)
+        let drawn: Bool = pixels.withUnsafeMutableBytes { buffer in
+            guard let ctx = CGContext(data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: side, height: side))
+            return true
+        }
+        guard drawn else { return false }
+        let corners = [(0, 0), (side - 1, 0), (0, side - 1), (side - 1, side - 1)]
+        let clear = corners.filter { pixels[($0.1 * side + $0.0) * 4 + 3] < 24 }.count
+        return clear >= 2
+    }
+
     // MARK: Inspiration photos
 
     func addInspiration(_ data: Data) {
