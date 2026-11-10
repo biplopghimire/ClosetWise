@@ -56,22 +56,60 @@ final class OutfitEngineTests: XCTestCase {
     }
 
     @MainActor
-    func testFeedPagesThroughEverythingOnceAndDropsDislikes() {
+    private func scroll(_ feed: OutfitFeed, to target: Int) async throws {
+        for _ in 0..<2000 where feed.count < target {
+            feed.loadMore()
+            try await Task.sleep(for: .milliseconds(2))
+        }
+    }
+
+    @MainActor
+    func testFeedIsEndlessVariedAndDropsDislikes() async throws {
+        let signals = StyleSignals(weather: weather(feels: 18))
         let feed = OutfitFeed()
-        feed.reset(items: closet, signals: StyleSignals(weather: weather(feels: 18)), fresh: true)
-        XCTAssertEqual(feed.shown.count, 8)
-        let first = feed.shown[0]
+        feed.reset(items: closet, signals: signals)
+        try await scroll(feed, to: 10)
+        XCTAssertGreaterThanOrEqual(feed.count, 10, "first page arrives from the background ranking")
+
+        let first = feed.rounds[0].entries[0].outfit
         feed.drop(disliked: [first.id])
-        XCTAssertFalse(feed.shown.contains(first))
-        var pages = 0
-        while !feed.exhausted && pages < 500 { feed.loadMore(); pages += 1 }
-        XCTAssertTrue(feed.exhausted)
-        XCTAssertEqual(Set(feed.shown.map(\.id)).count, feed.shown.count, "no outfit shown twice")
-        XCTAssertEqual(feed.shown.count, feed.total - 1)
-        // Neighbours rarely repeat: most consecutive pairs share at most one piece.
-        let pairs = zip(feed.shown, feed.shown.dropFirst()).prefix(20)
-        let similar = pairs.filter { Set($0.pieces.map(\.id)).intersection($1.pieces.map(\.id)).count >= 2 }.count
-        XCTAssertLessThanOrEqual(similar, 4)
+        XCTAssertFalse(feed.rounds.flatMap(\.entries).contains { $0.outfit.id == first.id })
+
+        // Scroll well past everything the closet can make: the feed keeps going.
+        let total = OutfitEngine.rank(from: closet, signals: signals).count
+        try await scroll(feed, to: total + 40)
+        XCTAssertGreaterThanOrEqual(feed.count, total + 40, "the feed never runs dry")
+        XCTAssertGreaterThan(feed.rounds.count, 1, "a new round starts once everything has been shown")
+        XCTAssertFalse(feed.rounds.flatMap(\.entries).contains { $0.outfit.id == first.id }, "turned-down outfits stay gone")
+
+        let firstRound = feed.rounds[0].entries.map(\.outfit.id)
+        XCTAssertEqual(Set(firstRound).count, firstRound.count, "no repeats within a round")
+        XCTAssertEqual(Set(feed.rounds.flatMap(\.entries).map(\.id)).count, feed.count, "every card has its own id")
+        let shown = feed.rounds[0].entries.map(\.outfit)
+        let similar = zip(shown, shown.dropFirst()).prefix(20)
+            .filter { Set($0.pieces.map(\.id)).intersection($1.pieces.map(\.id)).count >= 2 }.count
+        XCTAssertLessThanOrEqual(similar, 4, "neighbours rarely share most of their pieces")
+    }
+
+    @MainActor
+    func testBigClosetFeedKeepsFindingNewOutfits() async throws {
+        var big: [WardrobeItem] = []
+        for i in 0..<8 { big += SampleData.wardrobe.map { var x = $0; x.id = UUID(); x.name += " \(i)"; return x } }
+        let feed = OutfitFeed()
+        feed.reset(items: big, signals: StyleSignals())
+        try await scroll(feed, to: 400)
+        let ids = feed.rounds[0].entries.map(\.outfit.id)
+        XCTAssertGreaterThanOrEqual(ids.count, 400)
+        XCTAssertEqual(Set(ids).count, ids.count, "a big closet keeps producing outfits it hasn't shown")
+    }
+
+    @MainActor
+    func testGarmentsAreDrawnOnceAndReused() {
+        let tee = SampleData.blackTee
+        let slot = OutfitBoard.slot(for: tee.category, size: 170)
+        let first = GarmentSprites.shared.image(tee, size: slot)
+        XCTAssertNotNil(first)
+        XCTAssertTrue(GarmentSprites.shared.image(tee, size: slot) === first, "second card reuses the same picture")
     }
 
     func testWarmthTargetsRiseAsItGetsColder() {

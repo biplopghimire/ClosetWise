@@ -1,100 +1,200 @@
 import Foundation
 import Observation
 
-/// An endless-feeling list of outfit ideas: the engine ranks every outfit the closet can make,
-/// and the feed hands them out a page at a time as the user scrolls — varied (no two neighbours
-/// share most of their pieces), with ones they haven't seen in the last few days first.
+/// An endless feed of outfit ideas.
+///
+/// The engine ranks outfits in the background; the feed hands them out a page at a time as the
+/// user scrolls, keeping neighbours varied and putting ones they haven't seen lately first.
+/// Big closets are sampled a round at a time, so new combinations keep coming. When a small
+/// closet has shown everything it can make, a new round starts with the same outfits in a fresh
+/// order — the feed never runs dry while the closet can make at least one outfit.
 @MainActor
 @Observable
 final class OutfitFeed {
-    private(set) var shown: [Outfit] = []
-    /// Every outfit has been shown; adding pieces makes more.
-    private(set) var exhausted = false
-    /// How many outfits the closet can make today.
-    private(set) var total = 0
+    struct Entry: Identifiable, Hashable {
+        /// Position in the feed (outfits can come back in later rounds, so the outfit id isn't unique).
+        let id: Int
+        let outfit: Outfit
+    }
+
+    struct Round: Identifiable {
+        let id: Int
+        var entries: [Entry] = []
+    }
+
+    private(set) var rounds: [Round] = []
+    /// Waiting for the next batch from the engine (shown as a spinner at the bottom).
+    private(set) var loading = false
+    /// The closet can't make a single outfit (or none suits today's weather).
+    private(set) var empty = false
+    /// Different outfits found so far.
+    private(set) var distinct = 0
+
+    var count: Int { rounds.reduce(0) { $0 + $1.entries.count } }
+    var isEmpty: Bool { count == 0 }
+    private var lastEntryID: Int { rounds.last?.entries.last?.id ?? -1 }
 
     @ObservationIgnored private var queue: [Outfit] = []
-    @ObservationIgnored private var seen: Set<String> = []
+    @ObservationIgnored private var seenThisCycle: Set<String> = []
+    @ObservationIgnored private var everSeen: Set<String> = []
     @ObservationIgnored private var items: [WardrobeItem] = []
     @ObservationIgnored private var signals = StyleSignals()
-    @ObservationIgnored private var round: UInt64 = 0
-    /// Every combination has been ranked (small closet), so an empty queue means truly done.
-    @ObservationIgnored private var complete = true
+    @ObservationIgnored private var seed: UInt64 = 0
+    @ObservationIgnored private var nextEntryID = 0
+    @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var rankTask: Task<Void, Never>?
+    @ObservationIgnored private var waitingForPage = false
+    /// Outfits the user turned down since the feed was built; later rounds skip them too.
+    @ObservationIgnored private var dropped: Set<String> = []
+    @ObservationIgnored private var fruitlessRounds = 0
     @ObservationIgnored private var history: [String: Date]
-    @ObservationIgnored private let historyKey = "outfits.recentlyShown"
+    @ObservationIgnored private var saveTask: Task<Void, Never>?
+    private static let historyKey = "outfits.recentlyShown"
+    private static let pageSize = 10
 
     init() {
-        history = (UserDefaults.standard.dictionary(forKey: historyKey) as? [String: Date]) ?? [:]
+        history = (UserDefaults.standard.dictionary(forKey: Self.historyKey) as? [String: Date]) ?? [:]
     }
 
-    /// Rebuilds the feed (closet, style or weather changed) and shows the first page.
-    func reset(items: [WardrobeItem], signals: StyleSignals, fresh: Bool = false) {
-        if fresh { history = [:] }
+    // MARK: Public
+
+    /// Rebuilds the feed (closet, style or weather changed). Ranking happens in the background.
+    func reset(items: [WardrobeItem], signals: StyleSignals) {
+        generation += 1
+        rankTask?.cancel()
+        rankTask = nil
         self.items = items
         self.signals = signals
-        seen = []
-        shown = []
+        rounds = [Round(id: 0)]
+        dropped = signals.disliked
         queue = []
-        total = 0
-        round = UInt64.random(in: 1...UInt64.max / 2)
-        exhausted = false
+        seenThisCycle = []
+        everSeen = []
+        distinct = 0
+        empty = false
+        fruitlessRounds = 0
+        seed = UInt64.random(in: 1...UInt64.max / 2)
+        waitingForPage = true
+        loading = true
         refill()
-        loadMore()
     }
 
-    /// Ranks another round. Small closets are ranked whole in one go; big ones are sampled, so each
-    /// round brings combinations the user hasn't seen yet.
-    private func refill() {
-        for _ in 0..<4 {
-            round &+= 1
-            let ranking = OutfitEngine.ranking(from: items, signals: signals, recentlyShown: history, seed: round)
-            complete = ranking.complete
-            // A little shuffle so the feed doesn't open on the same outfits every visit.
-            var rng = SplitMix64(seed: round)
-            let fresh = ranking.outfits.filter { !seen.contains($0.id) }
-                .map { o -> Outfit in var o = o; o.score += Double(rng.next() % 1000) / 1000 * 0.8; return o }
-                .sorted { $0.score > $1.score }
-            fresh.forEach { seen.insert($0.id) }
-            queue += fresh
-            total += fresh.count
-            if !fresh.isEmpty || complete { return }
+    /// Shows the next page; asks the engine for more well before the queue runs out.
+    func loadMore() {
+        if queue.count < Self.pageSize * 3 { refill() }
+        guard !queue.isEmpty else {
+            waitingForPage = true
+            loading = !empty
+            return
         }
+        waitingForPage = false
+        loading = false
+        appendPage()
+        if queue.count < Self.pageSize * 3 { refill() }
     }
 
-    /// Appends the next page. Called when the user scrolls near the end.
-    func loadMore(_ count: Int = 8) {
-        if queue.count < count && !complete { refill() }
-        guard !queue.isEmpty else { exhausted = true; return }
-        var page: [Outfit] = []
-        var uses: [UUID: Int] = [:]
-        while page.count < count, !queue.isEmpty {
-            let recent = (shown + page).suffix(4)
-            let index = queue.prefix(80).firstIndex { candidate in
-                let ids = Set(candidate.pieces.map(\.id))
-                return !recent.contains { ids.intersection($0.pieces.map(\.id)).count >= 2 }
-                    && !candidate.pieces.contains { (uses[$0.id] ?? 0) >= 2 }
-            } ?? queue.startIndex
-            let outfit = queue.remove(at: index)
-            page.append(outfit)
-            outfit.pieces.forEach { uses[$0.id, default: 0] += 1 }
-        }
-        shown += page
-        if queue.isEmpty && !complete { refill() }
-        exhausted = queue.isEmpty
-        remember(page)
-    }
+    /// True for entries near the end of the feed — time to fetch the next page.
+    func shouldLoadMore(after entry: Entry) -> Bool { entry.id >= lastEntryID - 8 }
+
+    /// The pieces the feed combines, so their pictures can be drawn ahead of time.
+    var pieces: [WardrobeItem] { items }
 
     /// The user said "Not for me" — take it out of the feed.
     func drop(disliked: Set<String>) {
-        shown.removeAll { disliked.contains($0.id) }
+        dropped.formUnion(disliked)
+        for i in rounds.indices { rounds[i].entries.removeAll { disliked.contains($0.outfit.id) } }
         queue.removeAll { disliked.contains($0.id) }
     }
 
-    private func remember(_ page: [Outfit]) {
+    // MARK: Paging
+
+    private func appendPage() {
+        var page: [Entry] = []
+        var uses: [UUID: Int] = [:]
+        let earlier = rounds[rounds.count - 1].entries.suffix(4).map(\.outfit)
+        while page.count < Self.pageSize, !queue.isEmpty {
+            let recent = (earlier + page.map(\.outfit)).suffix(4)
+            let index = queue.prefix(80).firstIndex { candidate in
+                let ids = Set(candidate.pieces.map(\.id))
+                return !recent.contains { ids.intersection($0.pieces.map(\.id)).count >= 2 }
+                    && !candidate.pieces.contains { (uses[$0.id] ?? 0) >= 3 }
+            } ?? queue.startIndex
+            let outfit = queue.remove(at: index)
+            page.append(Entry(id: nextEntryID, outfit: outfit))
+            nextEntryID += 1
+            outfit.pieces.forEach { uses[$0.id, default: 0] += 1 }
+        }
+        rounds[rounds.count - 1].entries += page
+        remember(page.map(\.outfit))
+    }
+
+    // MARK: Ranking (background)
+
+    private func refill() {
+        guard rankTask == nil, !empty else { return }
+        let items = self.items, signals = self.signals, history = self.history
+        seed &+= 1
+        let seed = self.seed
+        let generation = self.generation
+        rankTask = Task { [weak self] in
+            let ranking = await Task.detached(priority: .userInitiated) {
+                OutfitEngine.ranking(from: items, signals: signals, recentlyShown: history, seed: seed)
+            }.value
+            guard let self, !Task.isCancelled, self.generation == generation else { return }
+            self.rankTask = nil
+            self.absorb(ranking, seed: seed)
+        }
+    }
+
+    private func absorb(_ ranking: OutfitEngine.Ranking, seed: UInt64) {
+        if ranking.outfits.isEmpty && everSeen.isEmpty {
+            empty = true
+            loading = false
+            return
+        }
+        let ranking = OutfitEngine.Ranking(outfits: ranking.outfits.filter { !dropped.contains($0.id) }, complete: ranking.complete)
+        var rng = SplitMix64(seed: seed)
+        func shuffled(_ outfits: [Outfit], spread: Double) -> [Outfit] {
+            outfits.map { o -> Outfit in var o = o; o.score += Double(rng.next() % 1000) / 1000 * spread; return o }
+                .sorted { $0.score > $1.score }
+        }
+
+        let queued = Set(queue.map(\.id))
+        let fresh = ranking.outfits.filter { !seenThisCycle.contains($0.id) && !queued.contains($0.id) }
+        if !fresh.isEmpty {
+            fruitlessRounds = 0
+            queue += shuffled(fresh, spread: 0.8)
+            fresh.forEach { seenThisCycle.insert($0.id) }
+            for o in fresh where everSeen.insert(o.id).inserted { distinct += 1 }
+        } else if ranking.complete || fruitlessRounds >= 3 {
+            // Everything the closet makes has been shown: go round again, in a new order.
+            fruitlessRounds = 0
+            seenThisCycle = []
+            if !(rounds.last?.entries.isEmpty ?? true) { rounds.append(Round(id: rounds.count)) }
+            let again = shuffled(ranking.outfits, spread: 3)
+            queue += again
+            again.forEach { seenThisCycle.insert($0.id) }
+        } else {
+            fruitlessRounds += 1   // a big closet's sample came back with nothing new; try another
+            refill()
+            return
+        }
+        if waitingForPage { loadMore() }
+        if queue.count < Self.pageSize * 3 && !ranking.complete { refill() }
+    }
+
+    // MARK: History
+
+    private func remember(_ outfits: [Outfit]) {
         let now = Date.now
-        page.forEach { history[$0.id] = now }
-        let cutoff = now.addingTimeInterval(-14 * 86_400)
-        history = history.filter { $0.value > cutoff }
-        UserDefaults.standard.set(history, forKey: historyKey)
+        outfits.forEach { history[$0.id] = now }
+        saveTask?.cancel()
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, !Task.isCancelled else { return }
+            let cutoff = Date.now.addingTimeInterval(-14 * 86_400)
+            self.history = self.history.filter { $0.value > cutoff }
+            UserDefaults.standard.set(self.history, forKey: Self.historyKey)
+        }
     }
 }

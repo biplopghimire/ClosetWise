@@ -50,7 +50,28 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.10"
+  ClosetWiseUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: ClosetWiseUITests
+    dependencies:
+      - target: ClosetWise
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.10"
+        TEST_TARGET_NAME: ClosetWise
 schemes:
+  ClosetWiseScrollPerf:
+    build:
+      targets:
+        ClosetWise: all
+        ClosetWiseUITests: [test]
+    test:
+      config: Release
+      targets:
+        - ClosetWiseUITests
   ClosetWise:
     build:
       targets:

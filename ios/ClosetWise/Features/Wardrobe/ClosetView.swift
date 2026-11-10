@@ -61,6 +61,7 @@ struct ClosetView: View {
     }
 
     private var closet: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 14) {
@@ -107,8 +108,12 @@ struct ClosetView: View {
             .padding(.bottom, 24)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { shelfWidth = $0 }
         }
-        .onChange(of: lower) { if lower == .outfits && feed.shown.isEmpty { resetFeed() } }
-        .onChange(of: feedSignature) { if lower == .outfits || !feed.shown.isEmpty { resetFeed() } }
+        #if DEBUG
+        .task { await autoScrollFeedIfRequested(proxy) }
+        #endif
+        }
+        .onChange(of: lower) { if lower == .outfits && feed.isEmpty { resetFeed() } }
+        .onChange(of: feedSignature) { if lower == .outfits || !feed.isEmpty { resetFeed() } }
         .onChange(of: store.dislikedCombos) { feed.drop(disliked: store.dislikedCombos) }
         .sheet(item: $detail) { item in
             GarmentDetailView(
@@ -205,58 +210,36 @@ struct ClosetView: View {
         return "\(closet.hashValue)|\(style)|\(sky)"
     }
 
-    private func resetFeed(fresh: Bool = false) {
-        feed.reset(items: items, signals: store.outfitSignals, fresh: fresh)
+    #if DEBUG
+    /// Scroll-performance check: `-autoScrollFeed` opens Outfit ideas and scrolls it by itself,
+    /// so frame timing can be measured without a UI-test robot touching the app.
+    private func autoScrollFeedIfRequested(_ proxy: ScrollViewProxy) async {
+        guard ProcessInfo.processInfo.arguments.contains("-autoScrollFeed") else { return }
+        lower = .outfits
+        try? await Task.sleep(for: .seconds(3))
+        var target = 0
+        for _ in 0..<120 {
+            target += 4
+            withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo(target, anchor: .top) }
+            try? await Task.sleep(for: .milliseconds(450))
+        }
+    }
+    #endif
+
+    private func resetFeed() {
+        feed.reset(items: items, signals: store.outfitSignals)
     }
 
     private var cardWidth: CGFloat { max(140, (shelfWidth - 2 * Theme.pad - 12) / 2) }
 
     private var suggestions: some View {
         VStack(alignment: .leading, spacing: 14) {
-            weatherBanner.padding(.horizontal, Theme.pad)
-
-            if feed.shown.isEmpty {
-                Text(feed.total == 0 && feed.exhausted && !items.isEmpty
-                     ? (store.weather == nil ? "Outfit ideas appear once you have a top, a bottom and shoes."
-                                             : "Nothing in your closet suits today's weather yet — add a few pieces for it.")
-                     : "Outfit ideas appear once you have a top, a bottom and shoes.")
-                    .font(.caption).foregroundStyle(Theme.secondaryText).padding(.horizontal, Theme.pad)
-            } else {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 12, alignment: .top), GridItem(.flexible(), alignment: .top)], spacing: 18) {
-                    ForEach(Array(feed.shown.enumerated()), id: \.element.id) { index, outfit in
-                        Button { outfitDetail = outfit } label: { OutfitCard(outfit: outfit, size: cardWidth) }
-                            .buttonStyle(.plain)
-                            .onAppear { if index >= feed.shown.count - 4 { feed.loadMore() } }
-                    }
-                }
-                .padding(.horizontal, Theme.pad)
-
-                feedFooter.padding(.horizontal, Theme.pad)
-            }
+            weatherBanner
+            OutfitIdeasFeed(feed: feed, cardWidth: cardWidth,
+                            hasCloset: !items.isEmpty, hasWeather: store.weather != nil) { outfitDetail = $0 }
         }
-        .onAppear { if feed.shown.isEmpty { resetFeed() } }
-    }
-
-    @ViewBuilder private var feedFooter: some View {
-        if !feed.exhausted {
-            ProgressView().frame(maxWidth: .infinity).padding(.vertical, 8)
-                .onAppear { feed.loadMore() }
-        } else {
-            VStack(spacing: 8) {
-                Text("That's all \(feed.total) outfits your closet makes for today.")
-                    .font(.footnote.weight(.medium)).foregroundStyle(Theme.ink)
-                Text("Add a few pieces for new combinations, or go through them again.")
-                    .font(.caption).foregroundStyle(Theme.secondaryText)
-                HStack(spacing: 16) {
-                    Button("Start over") { resetFeed(fresh: true) }
-                    Button("Add a piece") { router.tab = .add }
-                }
-                .font(.subheadline.weight(.medium))
-            }
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-        }
+        .padding(.horizontal, Theme.pad)
+        .onAppear { if feed.isEmpty { resetFeed() } }
     }
 
     /// Today's weather, or a way to turn it on.

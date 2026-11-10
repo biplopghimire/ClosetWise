@@ -6,6 +6,8 @@ struct ClosetWiseApp: App {
     @State private var router = AppRouter()
     @Environment(\.scenePhase) private var scenePhase
 
+    init() { FrameHitchMonitor.startIfRequested() }
+
     var body: some Scene {
         WindowGroup {
             RootTabView()
