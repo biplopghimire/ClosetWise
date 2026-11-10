@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Garment drawings rendered once into images, with their soft shadow baked in.
+/// Garment pictures (real photos, or drawings when there's no photo) rendered once into images,
+/// with their soft shadow baked in.
 ///
 /// Drawing a garment live (paths, blurs, knit textures, gradients) costs tens of milliseconds —
 /// fine for one piece, too much for a feed of outfit cards. Each piece is drawn once per size it
@@ -25,7 +26,7 @@ final class GarmentSprites {
     func image(_ item: WardrobeItem, size: CGSize) -> UIImage? {
         if let hit = cached(item, size: size) { return hit }
         let pad = Self.pad
-        let content = GarmentCanvas(kind: item.kind, color: item.swatch)
+        let content = GarmentPiece(item: item)
             .frame(width: size.width, height: size.height)
             .shadow(color: .black.opacity(0.12), radius: 4, x: 2, y: 4)
             .padding(pad)
@@ -50,7 +51,8 @@ final class GarmentSprites {
     }
 
     private func key(_ item: WardrobeItem, _ size: CGSize) -> NSString {
-        "\(item.kind.rawValue)|\(item.hex)|\(Int(size.width))x\(Int(size.height))" as NSString
+        // The picture depends on the photo if there is one, otherwise on the drawn shape and colour.
+        "\(item.photo ?? "\(item.kind.rawValue)|\(item.hex)")|\(Int(size.width))x\(Int(size.height))" as NSString
     }
 }
 
@@ -72,7 +74,7 @@ struct GarmentSprite: View {
                 .frame(width: size.width + 2 * GarmentSprites.pad, height: size.height + 2 * GarmentSprites.pad)
                 .frame(width: size.width, height: size.height)
         } else {
-            GarmentCanvas(kind: item.kind, color: item.swatch).frame(width: size.width, height: size.height)
+            GarmentPiece(item: item).frame(width: size.width, height: size.height)
         }
     }
 }

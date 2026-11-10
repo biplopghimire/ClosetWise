@@ -138,3 +138,25 @@ struct ItemArtwork: View {
         }
     }
 }
+
+/// One piece on an outfit board: its real photo when there is one, otherwise the drawn garment.
+/// Cut-out photos sit on the board like the drawings; photos that still have their background
+/// show as small rounded tiles so they don't look like pasted rectangles.
+struct GarmentPiece: View {
+    let item: WardrobeItem
+
+    var body: some View {
+        if let name = item.photo, let image = ClosetStore.photo(name) {
+            if ClosetStore.isCutout(name) {
+                Image(uiImage: image).resizable().scaledToFit()
+            } else {
+                Image(uiImage: image).resizable().scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(.white, lineWidth: 2))
+                    .padding(4)
+            }
+        } else {
+            GarmentCanvas(kind: item.kind, color: item.swatch)
+        }
+    }
+}

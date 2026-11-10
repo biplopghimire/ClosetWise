@@ -22,7 +22,7 @@ struct OutfitBoard: View {
         if sprites {
             GarmentSprite(item: item, size: slot)
         } else {
-            GarmentCanvas(kind: item.kind, color: item.swatch).frame(width: slot.width, height: slot.height)
+            GarmentPiece(item: item).frame(width: slot.width, height: slot.height)
         }
     }
 
