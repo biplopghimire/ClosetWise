@@ -10,9 +10,13 @@ struct GarmentDetailView: View {
     @State private var angle: Double = 0
     @State private var dragStart: Double?
     @State private var editing = false
+    /// Pieces added from a photo open on the photo; the drawing is one tap away.
+    @State private var showPhoto = true
     @Environment(\.dismiss) private var dismiss
 
     private var showingBack: Bool { cos(angle * .pi / 180) < 0 }
+    private var photo: UIImage? { item.photo.flatMap(ClosetStore.photo) }
+    private var showingPhoto: Bool { showPhoto && photo != nil }
 
     var body: some View {
         ScrollView {
@@ -21,9 +25,19 @@ struct GarmentDetailView: View {
                     Spacer()
                     Button { editing = true } label: { Label("Edit", systemImage: "pencil").font(.subheadline.weight(.medium)) }
                 }
-                stage
+                if showingPhoto, let photo { photoStage(photo) } else { stage }
 
-                if item.kind.hangs {
+                if photo != nil {
+                    Picker("View", selection: $showPhoto.animation(.easeInOut(duration: 0.25))) {
+                        Text("Photo").tag(true)
+                        Text("Illustration").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 260)
+                    .frame(maxWidth: .infinity)
+                }
+
+                if item.kind.hangs && !showingPhoto {
                     HStack(spacing: 24) {
                         faceButton("Front", back: false)
                         faceButton("Back", back: true)
@@ -64,6 +78,20 @@ struct GarmentDetailView: View {
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { editing = false } } }
             }
         }
+    }
+
+    /// The real photo of the piece (background removed when the phone could do it).
+    private func photoStage(_ image: UIImage) -> some View {
+        Image(uiImage: image)
+            .resizable()
+            .scaledToFit()
+            .blendMode(.multiply)
+            .padding(24)
+            .frame(height: 354)
+            .frame(maxWidth: .infinity)
+            .background(Theme.mint.opacity(0.6), in: RoundedRectangle(cornerRadius: Theme.corner))
+            .accessibilityLabel("Photo of \(item.name)")
+            .transition(.opacity)
     }
 
     private var stage: some View {

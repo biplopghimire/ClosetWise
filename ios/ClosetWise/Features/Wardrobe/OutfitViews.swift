@@ -4,27 +4,45 @@ import SwiftUI
 struct OutfitBoard: View {
     let outfit: Outfit
     var size: CGFloat = 200
+    /// Use cached garment pictures instead of drawing live (for scrolling feeds).
+    var sprites = false
+
+    /// Where each kind of piece sits on a board of a given size.
+    static func slot(for category: ItemCategory, size s: CGFloat) -> CGSize {
+        switch category {
+        case .outerwear: CGSize(width: (s * 0.5).rounded(), height: (s * 0.78).rounded())
+        case .bottom: CGSize(width: (s * 0.4).rounded(), height: (s * 0.62).rounded())
+        case .shoes: CGSize(width: (s * 0.3).rounded(), height: (s * 0.17).rounded())
+        default: CGSize(width: (s * 0.44).rounded(), height: (s * 0.68).rounded())
+        }
+    }
+
+    @ViewBuilder private func piece(_ item: WardrobeItem, as category: ItemCategory) -> some View {
+        let slot = Self.slot(for: category, size: size)
+        if sprites {
+            GarmentSprite(item: item, size: slot)
+        } else {
+            GarmentCanvas(kind: item.kind, color: item.swatch).frame(width: slot.width, height: slot.height)
+        }
+    }
 
     var body: some View {
         let s = size
         ZStack {
             if let layer = outfit.layer {
-                GarmentCanvas(kind: layer.kind, color: layer.swatch)
-                    .frame(width: s * 0.5, height: s * 0.78)
+                piece(layer, as: .outerwear)
                     .rotationEffect(.degrees(-6))
                     .offset(x: -s * 0.2, y: -s * 0.04)
             }
-            GarmentCanvas(kind: outfit.bottom.kind, color: outfit.bottom.swatch)
-                .frame(width: s * 0.4, height: s * 0.62)
+            piece(outfit.bottom, as: .bottom)
                 .offset(x: s * 0.12, y: s * 0.17)
-            GarmentCanvas(kind: outfit.top.kind, color: outfit.top.swatch)
-                .frame(width: s * 0.44, height: s * 0.68)
+            piece(outfit.top, as: .top)
                 .offset(x: outfit.layer == nil ? -s * 0.08 : s * 0.04, y: -s * 0.12)
-            GarmentCanvas(kind: outfit.shoes.kind, color: outfit.shoes.swatch)
-                .frame(width: s * 0.3, height: s * 0.17)
+            piece(outfit.shoes, as: .shoes)
                 .offset(x: -s * 0.24, y: s * 0.36)
         }
-        .shadow(color: .black.opacity(0.12), radius: 4, x: 2, y: 4)
+        // Sprites carry their own shadow; live drawings get one here.
+        .shadow(color: .black.opacity(sprites ? 0 : 0.12), radius: sprites ? 0 : 4, x: 2, y: 4)
         .frame(width: s, height: s)
         .background(Theme.mint, in: RoundedRectangle(cornerRadius: Theme.corner))
         .clipShape(RoundedRectangle(cornerRadius: Theme.corner))

@@ -6,6 +6,8 @@ struct ClosetWiseApp: App {
     @State private var router = AppRouter()
     @Environment(\.scenePhase) private var scenePhase
 
+    init() { FrameHitchMonitor.startIfRequested() }
+
     var body: some Scene {
         WindowGroup {
             RootTabView()
@@ -13,9 +15,13 @@ struct ClosetWiseApp: App {
                 .environment(store)
                 .environment(router)
                 .task { await Cloud.shared.start(store) }
+                .task { await WeatherService.shared.attach(store) }
                 .onChange(of: scenePhase) { old, new in
                     // Coming back to the app: pick up changes made on another phone.
-                    if new == .active, old == .background { Task { await Cloud.shared.refresh(store) } }
+                    if new == .active, old == .background {
+                        Task { await Cloud.shared.refresh(store) }
+                        Task { await WeatherService.shared.attach(store) }
+                    }
                 }
         }
     }
