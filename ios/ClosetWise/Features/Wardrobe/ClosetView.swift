@@ -14,11 +14,16 @@ struct ClosetView: View {
     @Environment(ClosetStore.self) private var store
     @Environment(AppRouter.self) private var router
     private var items: [WardrobeItem] { store.items }
-    private var outfits: [Outfit] { store.suggestions() }
+    @State private var feed = OutfitFeed()
+    private var weather: WeatherService { WeatherService.shared }
     private let filters: [ItemCategory] = [.top, .outerwear, .bottom, .shoes]
 
     private var hanging: [WardrobeItem] { items.filter { $0.kind.hangs && matches($0) } }
     private var shelved: [WardrobeItem] { items.filter { !$0.kind.hangs && matches($0) } }
+    /// Upper shelf: trousers, skirts, shorts. Lower shelf: shoes and sandals.
+    private var bottomShelf: [WardrobeItem] { shelved.filter { $0.kind != .shoes } }
+    private var shoeShelf: [WardrobeItem] { shelved.filter { $0.kind == .shoes } }
+    @State private var shelfWidth: CGFloat = 0
     private var selectedItem: WardrobeItem? { hanging.first { $0.id == selected } }
 
     private func matches(_ item: WardrobeItem) -> Bool { filter == nil || item.category == filter }
@@ -83,7 +88,7 @@ struct ClosetView: View {
                     }
                 }
 
-                if filter == nil || !shelved.isEmpty {
+                if filter == nil || !shelved.isEmpty || lower == .outfits {
                     Picker("Show", selection: $lower) {
                         ForEach(Lower.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
@@ -92,21 +97,19 @@ struct ClosetView: View {
 
                     switch lower {
                     case .shelf:
-                        if shelved.isEmpty {
-                            Text("Bottoms and shoes sit on the shelf. Add some to see outfit ideas.")
-                                .font(.caption).foregroundStyle(Theme.secondaryText).padding(.horizontal, Theme.pad)
-                        } else { shelf }
+                        shelf
                     case .outfits:
-                        if outfits.isEmpty {
-                            Text("Outfit ideas appear once you have a top, a bottom and shoes.")
-                                .font(.caption).foregroundStyle(Theme.secondaryText).padding(.horizontal, Theme.pad)
-                        } else { suggestions }
+                        suggestions
                     }
                 }
             }
             .padding(.top, 8)
             .padding(.bottom, 24)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { shelfWidth = $0 }
         }
+        .onChange(of: lower) { if lower == .outfits && feed.shown.isEmpty { resetFeed() } }
+        .onChange(of: feedSignature) { if lower == .outfits || !feed.shown.isEmpty { resetFeed() } }
+        .onChange(of: store.dislikedCombos) { feed.drop(disliked: store.dislikedCombos) }
         .sheet(item: $detail) { item in
             GarmentDetailView(
                 item: item,
@@ -141,23 +144,42 @@ struct ClosetView: View {
     }
 
     private var shelf: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 22) {
+            if filter != .shoes {
+                shelfRow(bottomShelf, label: "Bottoms", empty: "No bottoms yet", itemHeight: 104)
+            }
+            if filter != .bottom {
+                shelfRow(shoeShelf, label: "Shoes", empty: "No shoes yet", itemHeight: 52)
+            }
+        }
+    }
+
+    /// One wooden shelf, full width, with its pieces standing on it and their names underneath.
+    private func shelfRow(_ pieces: [WardrobeItem], label: String, empty: String, itemHeight: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label.uppercased())
+                .font(.caption2.weight(.semibold)).foregroundStyle(Theme.secondaryText)
+                .padding(.horizontal, Theme.pad)
             ScrollView(.horizontal, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .bottom, spacing: 12) {
-                        ForEach(shelved) { item in
+                        ForEach(pieces) { item in
                             Button { detail = item } label: {
                                 ItemArtwork(item: item)
-                                    .frame(width: 80, height: item.kind == .shoes ? 44 : 104)
+                                    .frame(width: 80, height: itemHeight)
                                     .shadow(color: .black.opacity(0.14), radius: 3, x: 1, y: 3)
                             }
                             .accessibilityLabel(item.name)
+                        }
+                        if pieces.isEmpty {
+                            Text(empty).font(.caption).foregroundStyle(Theme.secondaryText.opacity(0.8))
+                                .frame(height: itemHeight * 0.6, alignment: .bottom)
                         }
                     }
                     .padding(.horizontal, 10)
                     ShelfBoard().frame(height: 10)
                     HStack(spacing: 12) {
-                        ForEach(shelved) { item in
+                        ForEach(pieces) { item in
                             Text(item.name).font(.caption2).foregroundStyle(Theme.secondaryText)
                                 .lineLimit(1).frame(width: 80)
                         }
@@ -165,26 +187,123 @@ struct ClosetView: View {
                     .padding(.horizontal, 10)
                     .padding(.top, 6)
                 }
+                // The board spans the closet even when the shelf only holds a pair or two.
+                .frame(minWidth: max(0, shelfWidth - 2 * (Theme.pad - 10)), alignment: .leading)
                 .padding(.horizontal, Theme.pad - 10)
             }
         }
     }
 
-    private var suggestions: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Built from what you own — starting with pieces you haven't worn lately.")
-                .font(.caption).foregroundStyle(Theme.secondaryText)
-                .padding(.horizontal, Theme.pad)
+    // MARK: Outfit ideas
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 12) {
-                    ForEach(outfits) { outfit in
-                        Button { outfitDetail = outfit } label: { OutfitCard(outfit: outfit) }
+    /// Changes that should rebuild the ideas: the closet, the stated style, or the weather.
+    private var feedSignature: String {
+        let closet = items.map { "\($0.id)\($0.updatedAt?.timeIntervalSince1970 ?? 0)" }.joined()
+        let p = store.preferences
+        let style = "\(p.vibes)\(p.loveColors)\(p.avoidColors)\(p.dressiness ?? 0)\(p.fits.mapValues(\.rawValue))"
+        let sky = store.weather.map { "\($0.band)\($0.isRainy)\($0.isSnowy)" } ?? "none"
+        return "\(closet.hashValue)|\(style)|\(sky)"
+    }
+
+    private func resetFeed(fresh: Bool = false) {
+        feed.reset(items: items, signals: store.outfitSignals, fresh: fresh)
+    }
+
+    private var cardWidth: CGFloat { max(140, (shelfWidth - 2 * Theme.pad - 12) / 2) }
+
+    private var suggestions: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            weatherBanner.padding(.horizontal, Theme.pad)
+
+            if feed.shown.isEmpty {
+                Text(feed.total == 0 && feed.exhausted && !items.isEmpty
+                     ? (store.weather == nil ? "Outfit ideas appear once you have a top, a bottom and shoes."
+                                             : "Nothing in your closet suits today's weather yet — add a few pieces for it.")
+                     : "Outfit ideas appear once you have a top, a bottom and shoes.")
+                    .font(.caption).foregroundStyle(Theme.secondaryText).padding(.horizontal, Theme.pad)
+            } else {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 12, alignment: .top), GridItem(.flexible(), alignment: .top)], spacing: 18) {
+                    ForEach(Array(feed.shown.enumerated()), id: \.element.id) { index, outfit in
+                        Button { outfitDetail = outfit } label: { OutfitCard(outfit: outfit, size: cardWidth) }
                             .buttonStyle(.plain)
+                            .onAppear { if index >= feed.shown.count - 4 { feed.loadMore() } }
                     }
                 }
                 .padding(.horizontal, Theme.pad)
+
+                feedFooter.padding(.horizontal, Theme.pad)
             }
+        }
+        .onAppear { if feed.shown.isEmpty { resetFeed() } }
+    }
+
+    @ViewBuilder private var feedFooter: some View {
+        if !feed.exhausted {
+            ProgressView().frame(maxWidth: .infinity).padding(.vertical, 8)
+                .onAppear { feed.loadMore() }
+        } else {
+            VStack(spacing: 8) {
+                Text("That's all \(feed.total) outfits your closet makes for today.")
+                    .font(.footnote.weight(.medium)).foregroundStyle(Theme.ink)
+                Text("Add a few pieces for new combinations, or go through them again.")
+                    .font(.caption).foregroundStyle(Theme.secondaryText)
+                HStack(spacing: 16) {
+                    Button("Start over") { resetFeed(fresh: true) }
+                    Button("Add a piece") { router.tab = .add }
+                }
+                .font(.subheadline.weight(.medium))
+            }
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        }
+    }
+
+    /// Today's weather, or a way to turn it on.
+    @ViewBuilder private var weatherBanner: some View {
+        if let now = store.weather {
+            HStack(spacing: 12) {
+                Image(systemName: now.symbol).font(.title2).symbolRenderingMode(.multicolor)
+                    .frame(width: 34)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(now.headline).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
+                    Text("\(now.advice). Ideas are picked for it.").font(.caption).foregroundStyle(Theme.secondaryText)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .background(Theme.mint, in: RoundedRectangle(cornerRadius: 14))
+        } else if weather.access == .denied {
+            HStack(spacing: 10) {
+                Image(systemName: "location.slash").foregroundStyle(Theme.secondaryText)
+                Text("Location is off, so ideas don't account for the weather.").font(.caption).foregroundStyle(Theme.secondaryText)
+                Spacer(minLength: 0)
+                Button("Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                }
+                .font(.caption.weight(.semibold))
+            }
+            .padding(12)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.border))
+        } else {
+            Button { Task { await weather.requestAccess() } } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: weather.loading ? "hourglass" : "cloud.sun").font(.title3).foregroundStyle(Theme.primary)
+                        .frame(width: 34)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(weather.loading ? "Checking the weather…" : "Dress for today's weather")
+                            .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
+                        Text(weather.lastError ?? "Use your location so ideas suit the temperature and rain.")
+                            .font(.caption).foregroundStyle(Theme.secondaryText)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "location.fill").font(.caption).foregroundStyle(Theme.primary)
+                }
+                .padding(12)
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.primary.opacity(0.4)))
+            }
+            .buttonStyle(.plain)
+            .disabled(weather.loading)
         }
     }
 

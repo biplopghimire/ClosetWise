@@ -91,7 +91,15 @@ struct HomeView: View {
             .background(Theme.mint, in: RoundedRectangle(cornerRadius: 20))
         } else if let outfit = suggestion {
             VStack(alignment: .leading, spacing: 14) {
-                Text("TODAY").font(.caption.weight(.bold)).foregroundStyle(Theme.secondaryText)
+                HStack(spacing: 6) {
+                    Text("TODAY").font(.caption.weight(.bold)).foregroundStyle(Theme.secondaryText)
+                    if let now = store.weather {
+                        Text("·").foregroundStyle(Theme.secondaryText)
+                        Label(now.headline, systemImage: now.symbol)
+                            .font(.caption.weight(.medium)).foregroundStyle(Theme.secondaryText)
+                            .lineLimit(1)
+                    }
+                }
                 HStack(alignment: .top, spacing: 14) {
                     OutfitBoard(outfit: outfit, size: 120)
                     VStack(alignment: .leading, spacing: 6) {

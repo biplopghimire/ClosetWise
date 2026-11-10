@@ -32,6 +32,7 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_NSCameraUsageDescription: "Take photos of your clothes and outfits."
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "Add clothes from your photo library."
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "ClosetWise checks the weather where you are so outfit ideas suit the day. Your location isn't stored."
         INFOPLIST_KEY_CFBundleDisplayName: ClosetWise
     info:
       path: ClosetWise/Info.plist

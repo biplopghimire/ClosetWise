@@ -24,6 +24,9 @@ final class ClosetStore {
     var removedLogIDs: Set<UUID> = []
     var removedCheckIDs: Set<UUID> = []
 
+    /// Today's weather where the user is (not saved or synced; set by `WeatherService`).
+    var weather: WeatherNow?
+
     @ObservationIgnored private let persist: Bool
     /// True while sync is writing the account's copy in, so it isn't stamped as a local edit.
     @ObservationIgnored var applyingRemote = false
@@ -142,11 +145,19 @@ final class ClosetStore {
     }
 
     func suggestions(limit: Int = 6) -> [Outfit] {
-        OutfitEngine.suggest(from: items, signals: signals, limit: limit)
+        OutfitEngine.suggest(from: items, signals: outfitSignals, limit: limit)
     }
 
     func outfits(with item: WardrobeItem) -> [Outfit] {
-        OutfitEngine.outfits(with: item, from: items, signals: signals)
+        OutfitEngine.outfits(with: item, from: items, signals: outfitSignals)
+    }
+
+    /// Taste plus today's weather — for what to wear now. Purchase checks use `signals`
+    /// (no weather), so a coat isn't judged on a summer afternoon.
+    var outfitSignals: StyleSignals {
+        var s = signals
+        s.weather = weather
+        return s
     }
 
     var signals: StyleSignals {
