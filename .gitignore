@@ -1,0 +1,23 @@
+.DS_Store
+ios/ClosetWise.xcodeproj/
+ios/ClosetWise/Info.plist
+ios/ClosetWise/Config/Secrets.xcconfig
+build/
+build-*/
+*.ipa
+*.xcarchive
+DerivedData/
+xcuserdata/
+supabase/.temp/
+supabase/.branches/
+.env
+.env.*
+!.env.example
+
+# Local Xcode / tool state
+*.xcuserstate
+.swiftpm/
+.claude/
+
+# Course material (contains teammates' contact details) — kept local
+project_context/

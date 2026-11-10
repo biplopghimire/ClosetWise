@@ -1,0 +1,5 @@
+// Default (empty) values. Real values go in Secrets.xcconfig, which is git-ignored.
+SUPABASE_URL =
+SUPABASE_ANON_KEY =
+
+#include? "Secrets.xcconfig"
