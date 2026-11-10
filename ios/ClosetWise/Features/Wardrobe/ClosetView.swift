@@ -170,8 +170,8 @@ struct ClosetView: View {
                     HStack(alignment: .bottom, spacing: 12) {
                         ForEach(pieces) { item in
                             Button { detail = item } label: {
-                                // Shelves show the drawings; tapping opens the real photo.
-                                GarmentCanvas(kind: item.kind, color: item.swatch)
+                                // The real photo when there is one, otherwise the drawing.
+                                ItemArtwork(item: item)
                                     .frame(width: 80, height: itemHeight)
                                     .shadow(color: .black.opacity(0.14), radius: 3, x: 1, y: 3)
                             }
