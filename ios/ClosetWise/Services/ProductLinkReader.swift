@@ -24,6 +24,24 @@ struct ProductPage: Encodable {
         meta["og:site_name"] ?? URL(string: url)?.host?.replacingOccurrences(of: "www.", with: "")
     }
 
+    /// Every product photo the listing offers (the gallery from structured data, the share image, the
+    /// big pictures on the page), de-duplicated, best first.
+    var galleryPhotos: [URL] {
+        let base = URL(string: url)
+        var urls: [URL] = []
+        for block in structured {
+            guard let data = block.data(using: .utf8), let json = try? JSONSerialization.jsonObject(with: data),
+                  let product = ProductLinkFetcher.findProduct(json) else { continue }
+            urls += ProductLinkFetcher.imageURLs(product["image"], base: base)
+            for variant in (product["hasVariant"] as? [[String: Any]] ?? []).prefix(3) {
+                urls += ProductLinkFetcher.imageURLs(variant["image"], base: base)
+            }
+        }
+        urls += [meta["og:image"].flatMap { URL(string: $0, relativeTo: base) }].compactMap { $0 } + imageURLs
+        var seen = Set<String>()
+        return urls.filter { $0.scheme?.hasPrefix("http") == true && seen.insert($0.absoluteString).inserted }.prefix(10).map { $0 }
+    }
+
     /// Enough to work with: a product in the structured data, or a title plus a picture.
     var hasProductSignals: Bool {
         !structured.isEmpty || ((meta["og:title"] ?? meta["h1"]) != nil && (!imageURLs.isEmpty || meta["og:image"] != nil))
@@ -250,6 +268,14 @@ enum ProductLinkFetcher {
         }
         if let array = json as? [Any] { for element in array { if let p = findProduct(element) { return p } } }
         return nil
+    }
+
+    /// All image links in a schema.org `image` value (a string, an array, or ImageObjects).
+    static func imageURLs(_ value: Any?, base: URL?) -> [URL] {
+        if let s = value as? String { return [URL(string: s, relativeTo: base)].compactMap { $0 } }
+        if let a = value as? [Any] { return a.flatMap { imageURLs($0, base: base) } }
+        if let d = value as? [String: Any] { return imageURLs(d["url"] ?? d["contentUrl"], base: base) }
+        return []
     }
 
     private static func imageURL(_ value: Any?, base: URL?) -> URL? {

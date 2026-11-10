@@ -83,6 +83,10 @@ enum ItemReader {
 
         task.step(3)
         if let cut { item.photo = store.savePhoto(cut) }
+        // The check shows the listing's first photo (often on a model); if it's bought, the closet gets
+        // an item-only photo picked from these.
+        let gallery = page.galleryPhotos.map(\.absoluteString)
+        item.photoOptions = gallery.isEmpty ? nil : gallery
         let price = item.price.map { " · \($0.dollars)" } ?? ""
         task.succeed(source == .gemini ? "Found it at \(storeName)\(price) — check the details." : "Pulled from the listing — check the fit and type.")
         return (item, source)

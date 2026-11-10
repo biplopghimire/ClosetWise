@@ -75,6 +75,11 @@ struct PurchaseResultView: View {
 
     private func finish(_ decision: PurchaseRecord.Decision) {
         store.record(result, decision: decision)
+        // Bought from a store link: give the closet a photo of just the item (the check showed the listing's own).
+        if decision == .bought, result.product.photoOptions != nil {
+            let id = result.product.id
+            Task { await ClosetPhotoPicker.improve(itemID: id, store: store) }
+        }
         onFinish()
     }
 

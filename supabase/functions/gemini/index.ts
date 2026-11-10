@@ -14,6 +14,8 @@
 //     → { matches: [{ item_id, confidence }], not_in_closet: [string] }
 //   { "action": "read_product", page: { url, title, structured, meta, text }, image_base64? }
 //     → { product: { is_product, name, brand, price, currency, ...attribute fields } }
+//   { "action": "pick_product_photo", name, category, images: ["<base64 jpeg>", …] }
+//     → { index, shows, box_2d: [ymin, xmin, ymax, xmax] (0–1000) }
 //
 // Secrets: GEMINI_API_KEY (required), GEMINI_FLASH_MODEL, GEMINI_EMBED_MODEL (optional overrides).
 
@@ -75,6 +77,34 @@ otherwise read them from the text. Take colour and material from the selected va
 Judge fit and silhouette from the description and photo (words like oversized, relaxed, slim, boxy, cropped, wide-leg)
 rather than from size labels. If the page is an access-denied/robot check, a search or category listing,
 or not a fashion item, set is_product to false. Use common, lowercase fashion terms.`;
+
+/** Which listing photo to keep for the closet, and where the item is in it. */
+const PHOTO_SCHEMA = {
+  type: "object",
+  properties: {
+    index: { type: "integer", description: "0-based index of the chosen photo." },
+    shows: {
+      type: "string",
+      enum: ["item_only", "on_model", "detail", "other"],
+      description: "item_only: flat lay, on a hanger, ghost mannequin or packshot. on_model: worn by a person.",
+    },
+    box_2d: {
+      type: "array",
+      items: { type: "integer" },
+      minItems: 4,
+      maxItems: 4,
+      description: "[ymin, xmin, ymax, xmax] on a 0–1000 scale around just this item (not the whole person or other garments).",
+    },
+  },
+  required: ["index", "shows", "box_2d"],
+};
+
+const PHOTO_PROMPT = `These photos come from an online store's listing. The shopper bought the item described below
+and wants one clean picture of it for their digital closet.
+Pick the photo that shows this item by itself — a flat lay, on a hanger, on a ghost mannequin or a packshot —
+from the front, whole and in focus. Skip close-ups of fabric or labels, and photos of other products.
+If every photo is on a model, pick the one where this item is most fully visible and least covered.
+Then give box_2d around just this item in that photo (for a shirt on a model: the shirt, not the trousers or the face).`;
 
 const STYLE_SCHEMA = {
   type: "object",
@@ -241,6 +271,22 @@ Deno.serve(async (req) => {
       const parts: unknown[] = [{ text: PRODUCT_PROMPT }, { text: `Page JSON:\n${JSON.stringify(trimmed)}` }];
       if (body.image_base64) parts.push({ inline_data: { mime_type: body.mime_type ?? "image/jpeg", data: body.image_base64 } });
       return json({ product: await generateJSON(parts, PRODUCT_SCHEMA) });
+    }
+
+    if (action === "pick_product_photo") {
+      const images: string[] = (body.images ?? []).slice(0, 8);
+      if (images.length === 0) return json({ error: "images required" }, 400);
+      const parts: unknown[] = [
+        { text: PHOTO_PROMPT },
+        { text: `Item: ${String(body.name ?? "").slice(0, 200)} (${String(body.category ?? "")})` },
+      ];
+      images.forEach((data, i) => {
+        parts.push({ text: `Photo ${i}:` });
+        parts.push({ inline_data: { mime_type: "image/jpeg", data } });
+      });
+      const result = await generateJSON(parts, PHOTO_SCHEMA);
+      result.index = Math.min(Math.max(0, Number(result.index) || 0), images.length - 1);
+      return json(result);
     }
 
     if (action === "judge_purchase") {
