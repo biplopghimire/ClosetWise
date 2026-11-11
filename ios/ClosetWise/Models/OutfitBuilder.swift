@@ -185,7 +185,11 @@ final class OutfitBuilder {
 
     private func rebuild(around look: Outfit) {
         outfit = look
+        let previous = Dictionary(uniqueKeysWithValues: rows.map { ($0.slot, $0) })
         rows = look.slots.compactMap { slot -> Row? in
+            // A locked row keeps its order, so it stays perfectly still while the rest changes.
+            if locked.contains(slot), let kept = previous[slot],
+               kept.entries.contains(where: { $0.item?.id == look.item(in: slot)?.id }) { return kept }
             let ranked = OutfitEngine.alternatives(for: slot, in: look, from: items, signals: signals)
             guard !ranked.isEmpty || look.item(in: slot) != nil else { return nil }
             var entries = ranked.map { Entry(id: $0.id, item: $0) }

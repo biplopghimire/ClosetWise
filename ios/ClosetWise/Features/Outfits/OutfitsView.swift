@@ -335,8 +335,13 @@ private struct SlotRow: View {
         settled = false
         let target = position
         swipedTo = target
+        let animate = !locked
         DispatchQueue.main.async {
-            withAnimation(.snappy) { proxy.scrollTo(target, anchor: .center) }
+            if animate {
+                withAnimation(.snappy) { proxy.scrollTo(target, anchor: .center) }
+            } else {
+                proxy.scrollTo(target, anchor: .center)   // locked: no slide, it isn't changing
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { settled = true }
         }
     }
