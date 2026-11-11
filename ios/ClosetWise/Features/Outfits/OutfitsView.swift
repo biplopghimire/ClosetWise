@@ -24,7 +24,6 @@ struct OutfitsView: View {
                     if builder.hasDresses && builder.hasSeparates { modePicker }
                     // The summary strip pins to the top while the rows scroll under it.
                     Section {
-                        if !builder.locked.isEmpty { suggestionBanner }
                         ForEach(builder.rows) { row in
                             SlotRow(row: row, height: Self.height(for: row.slot),
                                     position: position(for: row.slot),
@@ -151,48 +150,15 @@ struct OutfitsView: View {
         withAnimation(.snappy) { builder.nextPick() }
     }
 
-    /// What the sparkles mean, and a one-tap way to wear the suggestions.
-    private var suggestionBanner: some View {
-        let anchor = builder.lockedItems.map { $0.name.lowercased() }.joined(separator: " and ")
-        return HStack(alignment: .top, spacing: 10) {
-            Image(systemName: builder.suggestionSource == .gemini ? "sparkles" : "wand.and.stars")
-                .foregroundStyle(Theme.primary)
-                .symbolEffect(.pulse, isActive: builder.suggesting)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(builder.suggesting ? "Gemini is picking pieces for your \(anchor)…"
-                     : builder.suggestionSource == .gemini ? "Gemini's picks for your \(anchor)" : "Best matches for your \(anchor)")
-                    .font(.caption.weight(.semibold)).foregroundStyle(Theme.ink)
-                Text(builder.suggestionNote ?? "Pieces marked with a sparkle go best with it.")
-                    .font(.caption).foregroundStyle(Theme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-            if !builder.suggested.isEmpty {
-                Button("Wear picks") { withAnimation(.snappy) { builder.wearSuggestions() } }
-                    .font(.caption.weight(.semibold))
-            }
-        }
-        .padding(12)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.primary.opacity(0.35)))
-        .padding(.horizontal, Theme.pad)
-        .animation(.snappy, value: builder.suggestionSource)
-    }
-
     /// Two clear actions: see ClosetWise's next pick, or wear this one.
     private var actionBar: some View {
         HStack(spacing: 12) {
             Button {
                 withAnimation(.snappy) { builder.nextPick() }
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "sparkles").symbolEffect(.bounce, value: builder.pickCount)
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(builder.pickIndex == nil ? "ClosetWise pick" : "Next pick")
-                            .font(.subheadline.weight(.semibold))
-                        Text(pickCaption).font(.caption2).opacity(0.8)
-                            .contentTransition(.numericText())
-                    }
-                }
+                Label("Next pick", systemImage: "sparkles")
+                    .symbolEffect(.bounce, value: builder.pickCount)
+                    .font(.subheadline.weight(.semibold))
                 .frame(maxWidth: .infinity, minHeight: 54)
                 .foregroundStyle(Theme.primary)
                 .background(Theme.mint, in: RoundedRectangle(cornerRadius: 16))
@@ -224,12 +190,6 @@ struct OutfitsView: View {
         .background(.bar)
     }
 
-    private var pickCaption: String {
-        let total = builder.picks.count
-        guard total > 0 else { return "No other looks" }
-        if let index = builder.pickIndex { return "#\(index + 1) of \(total) · tap for #\((index + 1) % total + 1)" }
-        return "Back to #1 of \(total)"
-    }
 
     private var loggedToast: some View {
         Label("Logged for today", systemImage: "checkmark.circle.fill")
