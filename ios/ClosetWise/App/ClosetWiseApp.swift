@@ -52,9 +52,23 @@ struct RootTabView: View {
                 .tabItem { Label("Check", systemImage: "checkmark.circle") }
                 .tag(AppRouter.Tab.check)
         }
-        .fullScreenCover(isPresented: .constant(!store.profile.onboarded)) {
-            WelcomeView()
+        .fullScreenCover(item: .constant(gate)) { gate in
+            switch gate {
+            case .account: AuthView()
+            case .welcome: WelcomeView()
+            }
         }
+    }
+
+    /// What has to happen before the tabs: an account (when Supabase is set up), then onboarding.
+    private enum Gate: Identifiable {
+        case account, welcome
+        var id: Self { self }
+    }
+
+    private var gate: Gate? {
+        if Cloud.shared.needsAccount { return .account }
+        return store.profile.onboarded ? nil : .welcome
     }
 }
 

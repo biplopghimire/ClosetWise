@@ -8,7 +8,6 @@ struct WelcomeView: View {
     @State private var name = ""
     @State private var vibes: [String] = []
     @FocusState private var nameFocused: Bool
-    @State private var showSignIn = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,9 +36,7 @@ struct WelcomeView: View {
     private var intro: some View {
         VStack(spacing: 20) {
             Spacer()
-            GarmentCanvas(kind: .knit, face: .front, color: Theme.primary, hanger: .wood, headroom: 10)
-                .frame(width: 150, height: 220)
-                .shadow(color: .black.opacity(0.15), radius: 10, y: 10)
+            AppLogo(size: 150)
             VStack(spacing: 10) {
                 Text("ClosetWise").font(.largeTitle.weight(.bold)).foregroundStyle(Theme.ink)
                 Text("Check a piece against the closet you already own — before you buy it.")
@@ -47,13 +44,8 @@ struct WelcomeView: View {
             }
             Spacer()
             PrimaryButton(title: "Get started") { page = 1 }
-            Button("I already have a closet saved") { showSignIn = true }
-                .font(.subheadline.weight(.medium))
         }
         .padding(28)
-        .sheet(isPresented: $showSignIn) {
-            AccountSheet(mode: .signIn) { router.tab = .home }
-        }
     }
 
     private var aboutYou: some View {
@@ -126,21 +118,17 @@ struct WelcomeView: View {
     private func finish(demo: Bool) {
         store.profile = UserProfile(name: name.trimmingCharacters(in: .whitespaces), onboarded: true)
         for v in vibes where !store.preferences.vibes.contains(v) { store.preferences.vibes.append(v) }
-        if demo { store.loadDemo() } else { store.save() }
+        if demo { store.loadDemo(account: Cloud.shared.accountID) } else { store.save() }
     }
 }
 
-extension AccountSheet.Mode: Identifiable {
-    public var id: Self { self }
-}
-
-/// Name, account, demo closet.
+/// Name, account, Gemini key, demo closet.
 struct SettingsSheet: View {
     @Environment(ClosetStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var confirmClear = false
-    @State private var account: AccountSheet.Mode?
     @State private var confirmSignOut = false
+    @State private var confirmRemoveDemo = false
     private var cloud: Cloud { Cloud.shared }
 
     var body: some View {
@@ -154,24 +142,45 @@ struct SettingsSheet: View {
                 }
                 accountSection
                 Section {
-                    if store.hasDemoItems {
-                        Text("You're using the demo closet.").foregroundStyle(.secondary)
+                    NavigationLink { GeminiKeyView() } label: {
+                        LabeledContent("Gemini API key", value: GeminiKey.shared.hint ?? "Not set")
+                    }
+                } header: { Text("AI") } footer: {
+                    Text("ClosetWise's AI reads use your own free Gemini key.")
+                }
+                Section {
+                    if store.hasDemoData {
+                        Button("Remove the demo closet", role: .destructive) { confirmRemoveDemo = true }
                     } else {
-                        Button("Load the demo closet") { store.loadDemo(); dismiss() }
+                        Button("Load the demo closet") { store.loadDemo(account: Cloud.shared.accountID); dismiss() }
                     }
                     Button("Clear my closet", role: .destructive) { confirmClear = true }
                 } header: { Text("Closet") } footer: {
                     Text("Clearing removes your items, outfits and checks here and on any other phone signed in to this closet.")
                 }
+                Section {
+                    HStack(spacing: 12) {
+                        AppLogo(size: 40)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("ClosetWise").font(.subheadline.weight(.semibold))
+                            Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0")")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { store.save(); dismiss() } } }
-            .sheet(item: $account) { mode in AccountSheet(mode: mode) }
             .confirmationDialog("Sign out?", isPresented: $confirmSignOut, titleVisibility: .visible) {
                 Button("Sign out", role: .destructive) { Task { await cloud.signOut(store: store); dismiss() } }
             } message: {
-                Text("Your closet stays saved to \(cloud.email ?? "your email"). This phone starts fresh until you sign in again.")
+                Text("Your closet stays saved to \(cloud.email ?? "your account"). This phone is cleared until you sign in again.")
+            }
+            .confirmationDialog("Remove the demo closet?", isPresented: $confirmRemoveDemo, titleVisibility: .visible) {
+                Button("Remove demo pieces", role: .destructive) { store.removeDemo(); dismiss() }
+            } message: {
+                Text("Removes the sample pieces, outfits and checks. Everything you added yourself stays.")
             }
             .confirmationDialog("Clear your closet?", isPresented: $confirmClear, titleVisibility: .visible) {
                 Button("Clear closet", role: .destructive) { store.clearCloset(); dismiss() }
@@ -182,25 +191,17 @@ struct SettingsSheet: View {
     }
 
     @ViewBuilder private var accountSection: some View {
-        Section {
-            if let email = cloud.email {
-                LabeledContent("Saved to", value: email)
-                syncLine
-                Button("Sign out", role: .destructive) { confirmSignOut = true }
+        Section("Account") {
+            if !SupabaseService.isConfigured {
+                Text("Supabase isn't configured, so your closet is saved on this phone only.")
+                    .font(.footnote).foregroundStyle(.secondary)
             } else {
-                Button { account = .save } label: {
-                    Label("Save my closet to an email", systemImage: "lock.icloud")
-                }
-                .disabled(!cloud.isSignedIn)
-                Button { account = .signIn } label: {
-                    Label("I already have a closet saved", systemImage: "person.crop.circle")
-                }
-                .disabled(!cloud.isSignedIn)
+                if let email = cloud.email { LabeledContent("Signed in as", value: email) }
                 syncLine
-            }
-        } header: { Text("Account") } footer: {
-            if cloud.email == nil, cloud.isSignedIn {
-                Text("Until you save it, your closet is tied to this app — deleting the app loses it.")
+                if cloud.isSignedIn {
+                    NavigationLink("Set a password") { SetPasswordView() }
+                }
+                Button("Sign out", role: .destructive) { confirmSignOut = true }
             }
         }
     }
@@ -215,6 +216,52 @@ struct SettingsSheet: View {
             } else if cloud.isSignedIn {
                 Button("Sync now") { Task { await cloud.sync(store, pull: true) } }.font(.caption)
             }
+        }
+    }
+}
+
+/// Settings → Account → Set a password. Works while signed in, without any email.
+struct SetPasswordView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var password = ""
+    @State private var working = false
+    @State private var error: String?
+    @State private var done = false
+
+    var body: some View {
+        Form {
+            Section {
+                SecureField("New password", text: $password)
+                    .textContentType(.newPassword)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button(working ? "Saving…" : "Save password") { Task { await save() } }
+                    .disabled(working || password.count < AuthView.minPassword)
+            } footer: {
+                if let error {
+                    Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.red)
+                } else if done {
+                    Label("Password saved. Use it with \(Cloud.shared.email ?? "your email") to sign in on any phone.", systemImage: "checkmark.circle")
+                        .foregroundStyle(Theme.primary)
+                } else {
+                    Text("At least \(AuthView.minPassword) characters. You'll use it with \(Cloud.shared.email ?? "your email") to sign in on another phone.")
+                }
+            }
+        }
+        .navigationTitle("Set a password")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func save() async {
+        working = true
+        error = nil
+        defer { working = false }
+        do {
+            try await Cloud.shared.setPassword(password)
+            password = ""
+            done = true
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 }

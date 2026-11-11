@@ -154,7 +154,7 @@ enum GarmentPhoto {
         struct Request: Encodable { let action = "attributes"; let image_base64: String; let mime_type = "image/jpeg" }
         struct Response: Decodable { let attributes: GeminiAttributes }
         guard let response: Response = try? await client.functions.invoke(
-            "gemini", options: FunctionInvokeOptions(body: Request(image_base64: jpeg.base64EncodedString()))
+            "gemini", options: SupabaseService.geminiOptions(body: Request(image_base64: jpeg.base64EncodedString()))
         ) else { return nil }
         return response.attributes.item
     }
@@ -188,7 +188,7 @@ enum GarmentPhoto {
         let jpeg = image?.resized(maxSide: 1024).jpegData(compressionQuality: 0.8)?.base64EncodedString()
         let response: Response
         do {
-            response = try await client.functions.invoke("gemini", options: FunctionInvokeOptions(body: Request(page: page, image_base64: jpeg)))
+            response = try await client.functions.invoke("gemini", options: SupabaseService.geminiOptions(body: Request(page: page, image_base64: jpeg)))
         } catch {
             var detail = String(describing: error)
             if case let FunctionsError.httpError(code, data) = error { detail = "\(code): \(String(decoding: data, as: UTF8.self))" }

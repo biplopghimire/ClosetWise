@@ -20,6 +20,7 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 22) {
                 header
                 if !Cloud.shared.isSignedIn || Cloud.shared.lastError != nil { CloudStatusRow() }
+                if SupabaseService.isConfigured && !GeminiKey.shared.isSet { geminiKeyRow }
 
                 if store.items.isEmpty {
                     emptyCard
@@ -38,6 +39,24 @@ struct HomeView: View {
     }
 
     // MARK: Sections
+
+    private var geminiKeyRow: some View {
+        Button { showSettings = true } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "key").foregroundStyle(Theme.primary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Add your Gemini API key").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
+                    Text("AI reads of photos, purchase verdicts and outfit logging need it. Settings → Gemini API key.")
+                        .font(.caption).foregroundStyle(Theme.secondaryText).multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.secondaryText)
+            }
+            .padding(14)
+            .background(Theme.mint, in: RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+    }
 
     private var header: some View {
         HStack(spacing: 12) {
@@ -62,7 +81,7 @@ struct HomeView: View {
             Text("Add a few pieces you wear a lot. ClosetWise uses them to check purchases and suggest outfits.")
                 .font(.subheadline).foregroundStyle(Theme.secondaryText)
             PrimaryButton(title: "Add your first piece", systemImage: "camera") { router.tab = .add }
-            Button("Or explore with a demo closet") { store.loadDemo() }
+            Button("Or explore with a demo closet") { store.loadDemo(account: Cloud.shared.accountID) }
                 .font(.subheadline.weight(.medium)).frame(maxWidth: .infinity)
         }
         .padding(18)
@@ -74,13 +93,16 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Label("Today's outfit is logged", systemImage: "checkmark.circle.fill")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.primary)
-                HStack(spacing: 8) {
-                    if let name = log.photo, let image = ClosetStore.photo(name) {
-                        Image(uiImage: image).resizable().scaledToFill()
-                            .frame(width: 56, height: 72)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                // Scrolls sideways so a 5-piece outfit can't make the whole page wider than the screen.
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        if let name = log.photo, let image = ClosetStore.photo(name) {
+                            Image(uiImage: image).resizable().scaledToFill()
+                                .frame(width: 56, height: 72)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        ForEach(log.itemIDs.compactMap(store.item).prefix(5)) { ItemImage(item: $0).frame(width: 56, height: 56) }
                     }
-                    ForEach(log.itemIDs.compactMap(store.item).prefix(5)) { ItemImage(item: $0).frame(width: 56, height: 56) }
                 }
                 NavigationLink { LogOutfitView() } label: {
                     Text("Log another").font(.subheadline.weight(.medium))

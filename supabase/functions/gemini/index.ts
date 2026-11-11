@@ -1,4 +1,10 @@
-// Authenticated proxy to the Gemini API. The API key never ships in the iOS app.
+// Authenticated proxy to the Gemini API.
+//
+// Bring your own key: each caller sends their own Gemini key in the `x-gemini-key` header
+// (Settings → Gemini API key in the iOS app, kept in the Keychain). The key is used for that request only and is never
+// stored or logged. Requests without the header fall back to the server's GEMINI_API_KEY only
+// for signed-in users whose email is listed in SERVER_KEY_EMAILS; anyone else gets 400
+// `missing_gemini_key`, so nobody can use the owner's quota by accident.
 //
 // POST /functions/v1/gemini
 //   { "action": "attributes", "image_base64": "...", "mime_type": "image/jpeg" }
@@ -17,7 +23,8 @@
 //   { "action": "pick_product_photo", name, category, images: ["<base64 jpeg>", …] }
 //     → { index, shows, box_2d: [ymin, xmin, ymax, xmax] (0–1000) }
 //
-// Secrets: GEMINI_API_KEY (required), GEMINI_FLASH_MODEL, GEMINI_EMBED_MODEL (optional overrides).
+// Secrets (all optional): GEMINI_API_KEY + SERVER_KEY_EMAILS (comma-separated) for the owner fallback,
+// GEMINI_FLASH_MODEL, GEMINI_EMBED_MODEL (model overrides).
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
@@ -168,11 +175,20 @@ List worn garments that are not in the closet separately. Ignore accessories unl
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-gemini-key",
 };
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
+}
+
+/** The caller's own key from `x-gemini-key`, else the server key for allow-listed emails, else null. */
+function geminiKey(req: Request, email: string | undefined): string | null {
+  const own = req.headers.get("x-gemini-key")?.trim();
+  if (own) return own;
+  const allowed = (Deno.env.get("SERVER_KEY_EMAILS") ?? "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
+  const serverKey = Deno.env.get("GEMINI_API_KEY");
+  return serverKey && email && allowed.includes(email.toLowerCase()) ? serverKey : null;
 }
 
 /** Thrown when Gemini stays overloaded or slow after retries; mapped to HTTP 503 for the app. */
@@ -182,14 +198,14 @@ const ATTEMPT_TIMEOUT_MS = 25_000;
 const MAX_ATTEMPTS = 2;  // 2 × 25 s + backoff stays under the app's 60 s request timeout
 
 /** Calls Gemini, retrying overloads (429/500/503) and timeouts with backoff. */
-async function gemini(model: string, method: string, body: unknown) {
+async function gemini(key: string, model: string, method: string, body: unknown) {
   let last = "";
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, 1500 * 2 ** (attempt - 1) + Math.random() * 500));
     try {
       const res = await fetch(`${API}/${model}:${method}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": Deno.env.get("GEMINI_API_KEY")! },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
       });
@@ -204,8 +220,8 @@ async function gemini(model: string, method: string, body: unknown) {
   throw new GeminiBusy(`Gemini busy after ${MAX_ATTEMPTS} attempts (${last})`);
 }
 
-async function generateJSON(parts: unknown[], schema: unknown) {
-  const out = await gemini(FLASH, "generateContent", {
+async function generateJSON(key: string, parts: unknown[], schema: unknown) {
+  const out = await gemini(key, FLASH, "generateContent", {
     contents: [{ role: "user", parts }],
     generationConfig: { responseMimeType: "application/json", responseJsonSchema: schema },
   });
@@ -222,6 +238,14 @@ Deno.serve(async (req) => {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return json({ error: "unauthorized" }, 401);
 
+  const key = geminiKey(req, user.email);
+  if (!key) {
+    return json({
+      error: "missing_gemini_key",
+      detail: "Add your Gemini API key in the app: Settings → Gemini API key.",
+    }, 400);
+  }
+
   try {
     const body = await req.json();
     const { action } = body;
@@ -233,7 +257,7 @@ Deno.serve(async (req) => {
         { text: `Profile JSON:\n${JSON.stringify(body.profile ?? {})}` },
         ...images.map((data) => ({ inline_data: { mime_type: "image/jpeg", data } })),
       ];
-      const result = await generateJSON(parts, STYLE_SCHEMA);
+      const result = await generateJSON(key, parts, STYLE_SCHEMA);
       await supabase.from("style_profiles").upsert({
         user_id: user.id,
         preferences: body.profile?.stated ?? {},
@@ -249,7 +273,7 @@ Deno.serve(async (req) => {
     if (action === "detect_outfit") {
       const closet = (body.closet ?? []).slice(0, 200);
       if (!body.image_base64) return json({ error: "image_base64 required" }, 400);
-      const result = await generateJSON([
+      const result = await generateJSON(key, [
         { text: OUTFIT_PROMPT },
         { text: `Closet JSON:\n${JSON.stringify(closet)}` },
         { inline_data: { mime_type: body.mime_type ?? "image/jpeg", data: body.image_base64 } },
@@ -270,7 +294,7 @@ Deno.serve(async (req) => {
       };
       const parts: unknown[] = [{ text: PRODUCT_PROMPT }, { text: `Page JSON:\n${JSON.stringify(trimmed)}` }];
       if (body.image_base64) parts.push({ inline_data: { mime_type: body.mime_type ?? "image/jpeg", data: body.image_base64 } });
-      return json({ product: await generateJSON(parts, PRODUCT_SCHEMA) });
+      return json({ product: await generateJSON(key, parts, PRODUCT_SCHEMA) });
     }
 
     if (action === "pick_product_photo") {
@@ -284,7 +308,7 @@ Deno.serve(async (req) => {
         parts.push({ text: `Photo ${i}:` });
         parts.push({ inline_data: { mime_type: "image/jpeg", data } });
       });
-      const result = await generateJSON(parts, PHOTO_SCHEMA);
+      const result = await generateJSON(key, parts, PHOTO_SCHEMA);
       result.index = Math.min(Math.max(0, Number(result.index) || 0), images.length - 1);
       return json(result);
     }
@@ -293,7 +317,7 @@ Deno.serve(async (req) => {
       const { image_base64: photo, action: _a, ...evidence } = body;
       const parts: unknown[] = [{ text: JUDGE_PROMPT }, { text: `Evidence JSON:\n${JSON.stringify(evidence)}` }];
       if (photo) parts.push({ inline_data: { mime_type: "image/jpeg", data: photo } });
-      return json(await generateJSON(parts, JUDGE_SCHEMA));
+      return json(await generateJSON(key, parts, JUDGE_SCHEMA));
     }
 
     const { image_base64, mime_type = "image/jpeg" } = body;
@@ -301,7 +325,7 @@ Deno.serve(async (req) => {
     const image = { inline_data: { mime_type, data: image_base64 } };
 
     if (action === "attributes") {
-      const attributes = await generateJSON(
+      const attributes = await generateJSON(key,
         [image, { text: "Identify this single clothing item. Fill every field; use common, lowercase fashion terms. Judge fit from how the fabric sits, not the size label." }],
         ATTRIBUTE_SCHEMA,
       );
@@ -309,7 +333,7 @@ Deno.serve(async (req) => {
     }
 
     if (action === "embed") {
-      const out = await gemini(EMBED, "embedContent", {
+      const out = await gemini(key, EMBED, "embedContent", {
         content: { parts: [image] },
         output_dimensionality: EMBED_DIMS,
       });

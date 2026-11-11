@@ -5,6 +5,37 @@ enum SampleData {
     /// Stable IDs so saved outfit logs keep pointing at the same sample items across launches.
     private static func sid(_ n: Int) -> UUID { UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", n))! }
 
+    // MARK: Per-account demo
+
+    /// The demo closet for one account. Every row id keeps its sample number in the last
+    /// 12 digits but takes the account's id as its prefix, so two accounts on the same Supabase
+    /// project never share row ids (rows are owned by one user; a shared id fails to sync),
+    /// while loading the demo again for the same account still lands on the same rows.
+    /// Without an account (no Supabase) the plain sample ids are used.
+    static func demo(for account: UUID?) -> (items: [WardrobeItem], logs: [OutfitLog], purchases: [PurchaseRecord]) {
+        func key(_ id: UUID) -> UUID { rekey(id, for: account) }
+        let items = wardrobe.map { var x = $0; x.id = key(x.id); return x }
+        let logs = outfitLogs.map { var x = $0; x.id = key(x.id); x.itemIDs = x.itemIDs.map(key); return x }
+        let purchases = purchaseHistory.map { var x = $0; x.id = key(x.id); x.product.id = key(x.product.id); return x }
+        return (items, logs, purchases)
+    }
+
+    /// True for a demo wardrobe item, whichever account its id was made for.
+    static func isDemoItem(_ id: UUID) -> Bool { demoItemSuffixes.contains(String(id.uuidString.suffix(12))) }
+
+    /// True for a demo outfit or demo purchase check, whichever account its id was made for.
+    static func isDemoLog(_ id: UUID) -> Bool { demoLogSuffixes.contains(String(id.uuidString.suffix(12))) }
+    static func isDemoCheck(_ id: UUID) -> Bool { demoCheckSuffixes.contains(String(id.uuidString.suffix(12))) }
+
+    private static let demoItemSuffixes = Set(wardrobe.map { String($0.id.uuidString.suffix(12)) })
+    private static let demoLogSuffixes = Set(outfitLogs.map { String($0.id.uuidString.suffix(12)) })
+    private static let demoCheckSuffixes = Set(purchaseHistory.map { String($0.id.uuidString.suffix(12)) })
+
+    private static func rekey(_ id: UUID, for account: UUID?) -> UUID {
+        guard let account else { return id }
+        return UUID(uuidString: String(account.uuidString.prefix(24)) + String(id.uuidString.suffix(12)))!
+    }
+
     static let blackTee = WardrobeItem(id: sid(1), name: "Black tee", category: .top, kind: .tee, color: "black", hex: 0x1D1D1F, material: "cotton", fit: .regular, silhouette: "crew neck", style: "casual", formality: 1, price: 20, wearCount: 24, daysSinceWorn: 1)
     static let whiteShirt = WardrobeItem(id: sid(2), name: "White shirt", category: .top, kind: .shirt, color: "white", hex: 0xF2F1EC, material: "cotton poplin", fit: .regular, silhouette: "button-down", style: "smart casual", formality: 3, price: 45, wearCount: 15, daysSinceWorn: 6)
     static let skyOxford = WardrobeItem(id: sid(3), name: "Sky oxford", category: .top, kind: .shirt, color: "blue", hex: 0xA3C9E2, material: "oxford cotton", fit: .relaxed, silhouette: "button-down", style: "smart casual", formality: 3, price: 60, wearCount: 4, daysSinceWorn: 41)

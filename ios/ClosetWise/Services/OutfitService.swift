@@ -44,8 +44,7 @@ enum OutfitService {
         }
         let response: Response
         do {
-            response = try await client.functions.invoke("gemini", options: FunctionInvokeOptions(
-                body: Request(image_base64: jpeg.base64EncodedString(), closet: closet)))
+            response = try await client.functions.invoke("gemini", options: SupabaseService.geminiOptions(body: Request(image_base64: jpeg.base64EncodedString(), closet: closet)))
         } catch FunctionsError.httpError(let code, _) where code == 503 {
             throw DetectError.busy
         } catch {

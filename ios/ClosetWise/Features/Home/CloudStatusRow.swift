@@ -21,7 +21,7 @@ struct CloudStatusRow: View {
 
     private var canRetry: Bool {
         switch cloud.status {
-        case .anonymousDisabled, .failed: true
+        case .failed: true
         case .signedIn: cloud.lastError != nil
         default: false
         }
