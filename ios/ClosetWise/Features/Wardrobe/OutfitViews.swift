@@ -13,6 +13,8 @@ struct OutfitBoard: View {
         case .outerwear: CGSize(width: (s * 0.5).rounded(), height: (s * 0.78).rounded())
         case .bottom: CGSize(width: (s * 0.4).rounded(), height: (s * 0.62).rounded())
         case .shoes: CGSize(width: (s * 0.3).rounded(), height: (s * 0.17).rounded())
+        case .dress: CGSize(width: (s * 0.46).rounded(), height: (s * 0.86).rounded())
+        case .accessory: CGSize(width: (s * 0.24).rounded(), height: (s * 0.24).rounded())
         default: CGSize(width: (s * 0.44).rounded(), height: (s * 0.68).rounded())
         }
     }
@@ -34,12 +36,24 @@ struct OutfitBoard: View {
                     .rotationEffect(.degrees(-6))
                     .offset(x: -s * 0.2, y: -s * 0.04)
             }
-            piece(outfit.bottom, as: .bottom)
-                .offset(x: s * 0.12, y: s * 0.17)
-            piece(outfit.top, as: .top)
-                .offset(x: outfit.layer == nil ? -s * 0.08 : s * 0.04, y: -s * 0.12)
+            if let bottom = outfit.bottom {
+                piece(bottom, as: .bottom)
+                    .offset(x: s * 0.12, y: s * 0.17)
+            }
+            if let top = outfit.top {
+                piece(top, as: .top)
+                    .offset(x: outfit.layer == nil ? -s * 0.08 : s * 0.04, y: -s * 0.12)
+            }
+            if let dress = outfit.dress {
+                piece(dress, as: .dress)
+                    .offset(x: outfit.layer == nil ? 0 : s * 0.08, y: -s * 0.02)
+            }
             piece(outfit.shoes, as: .shoes)
                 .offset(x: -s * 0.24, y: s * 0.36)
+            if let accessory = outfit.accessory {
+                piece(accessory, as: .accessory)
+                    .offset(x: s * 0.3, y: -s * 0.33)
+            }
         }
         // Sprites carry their own shadow; live drawings get one here.
         .shadow(color: .black.opacity(sprites ? 0 : 0.12), radius: sprites ? 0 : 4, x: 2, y: 4)
