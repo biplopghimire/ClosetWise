@@ -244,7 +244,7 @@ enum OutfitEngine {
         signals.occasion = nil
         let generous = Caps(tops: 40, bottoms: 30, shoes: 20, layers: 10, dresses: 20)
         if item.category == .accessory {
-            let base = rank(from: items, signals: signals, caps: generous)
+            let base = rank(from: items, signals: signals)
             let withIt = diverse(base, limit: limit).compactMap { o -> Outfit? in
                 var pieces = o.pieces.filter { $0.category != .accessory }
                 pieces.append(item)
@@ -456,7 +456,7 @@ enum OutfitEngine {
         let key = Outfit.comboKey(pieces.map(\.id))
         // Rotate among the three strongest reasons so a run of ideas doesn't repeat itself.
         let pick = reasons.count > 1 && !signals.loved.contains(key)
-            ? key.unicodeScalars.reduce(0) { $0 &+ Int($1.value) } % min(3, reasons.count) : 0
+            ? key.unicodeScalars.reduce(0) { $0 &+ Int($1.value) } % min(2, reasons.count) : 0
         return Outfit(top: dress == nil ? top : nil, bottom: dress == nil ? bottom : nil, dress: dress, shoes: shoes,
                       layer: first(.outerwear), accessory: first(.accessory),
                       title: title(for: clothes, signals), reason: reasons[pick], score: score,

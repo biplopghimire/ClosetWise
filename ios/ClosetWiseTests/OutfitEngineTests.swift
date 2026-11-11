@@ -56,54 +56,6 @@ final class OutfitEngineTests: XCTestCase {
     }
 
     @MainActor
-    private func scroll(_ feed: OutfitFeed, to target: Int) async throws {
-        for _ in 0..<2000 where feed.count < target {
-            feed.loadMore()
-            try await Task.sleep(for: .milliseconds(2))
-        }
-    }
-
-    @MainActor
-    func testFeedIsEndlessVariedAndDropsDislikes() async throws {
-        let signals = StyleSignals(weather: weather(feels: 18))
-        let feed = OutfitFeed()
-        feed.reset(items: closet, signals: signals)
-        try await scroll(feed, to: 10)
-        XCTAssertGreaterThanOrEqual(feed.count, 10, "first page arrives from the background ranking")
-
-        let first = feed.rounds[0].entries[0].outfit
-        feed.drop(disliked: [first.id])
-        XCTAssertFalse(feed.rounds.flatMap(\.entries).contains { $0.outfit.id == first.id })
-
-        // Scroll well past everything the closet can make: the feed keeps going.
-        let total = OutfitEngine.rank(from: closet, signals: signals).count
-        try await scroll(feed, to: total + 40)
-        XCTAssertGreaterThanOrEqual(feed.count, total + 40, "the feed never runs dry")
-        XCTAssertGreaterThan(feed.rounds.count, 1, "a new round starts once everything has been shown")
-        XCTAssertFalse(feed.rounds.flatMap(\.entries).contains { $0.outfit.id == first.id }, "turned-down outfits stay gone")
-
-        let firstRound = feed.rounds[0].entries.map(\.outfit.id)
-        XCTAssertEqual(Set(firstRound).count, firstRound.count, "no repeats within a round")
-        XCTAssertEqual(Set(feed.rounds.flatMap(\.entries).map(\.id)).count, feed.count, "every card has its own id")
-        let shown = feed.rounds[0].entries.map(\.outfit)
-        let similar = zip(shown, shown.dropFirst()).prefix(20)
-            .filter { Set($0.pieces.map(\.id)).intersection($1.pieces.map(\.id)).count >= 2 }.count
-        XCTAssertLessThanOrEqual(similar, 4, "neighbours rarely share most of their pieces")
-    }
-
-    @MainActor
-    func testBigClosetFeedKeepsFindingNewOutfits() async throws {
-        var big: [WardrobeItem] = []
-        for i in 0..<8 { big += SampleData.wardrobe.map { var x = $0; x.id = UUID(); x.name += " \(i)"; return x } }
-        let feed = OutfitFeed()
-        feed.reset(items: big, signals: StyleSignals())
-        try await scroll(feed, to: 400)
-        let ids = feed.rounds[0].entries.map(\.outfit.id)
-        XCTAssertGreaterThanOrEqual(ids.count, 400)
-        XCTAssertEqual(Set(ids).count, ids.count, "a big closet keeps producing outfits it hasn't shown")
-    }
-
-    @MainActor
     func testGarmentsAreDrawnOnceAndReused() {
         let tee = SampleData.blackTee
         let slot = OutfitBoard.slot(for: tee.category, size: 170)

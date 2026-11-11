@@ -6,6 +6,10 @@ import Supabase
 /// app still runs on sample data during UI work.
 enum SupabaseService {
     static let client: SupabaseClient? = {
+        #if DEBUG
+        // `-offline`: run as if Supabase weren't set up (no sign-in), for quick UI checks.
+        if ProcessInfo.processInfo.arguments.contains("-offline") { return nil }
+        #endif
         guard
             let urlString = Bundle.main.object(forInfoDictionaryKey: "SupabaseURL") as? String,
             let key = Bundle.main.object(forInfoDictionaryKey: "SupabaseAnonKey") as? String,
