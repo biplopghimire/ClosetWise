@@ -17,13 +17,14 @@ struct OutfitsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            LazyVStack(alignment: .leading, spacing: 14, pinnedViews: .sectionHeaders) {
                 header
                 if builder.canBuild, let outfit {
                     occasionChips
                     if builder.hasDresses && builder.hasSeparates { modePicker }
-                    if !builder.locked.isEmpty { suggestionBanner }
-                    VStack(spacing: 14) {
+                    // The summary strip pins to the top while the rows scroll under it.
+                    Section {
+                        if !builder.locked.isEmpty { suggestionBanner }
                         ForEach(builder.rows) { row in
                             SlotRow(row: row, height: Self.height(for: row.slot),
                                     position: position(for: row.slot),
@@ -33,17 +34,24 @@ struct OutfitsView: View {
                                 withAnimation(.snappy) { builder.toggleLock(row.slot) }
                             }
                         }
+                    } header: {
+                        SummaryStrip(outfit: outfit, pick: builder.pickIndex, loved: loved,
+                                     love: toggleLove, dislike: dislike)
                     }
-                    summary(outfit)
                 } else {
                     emptyState
                 }
             }
             .padding(.vertical, 8)
-            .padding(.bottom, 90)
+            .padding(.bottom, 24)
         }
         .scrollIndicators(.hidden)
         .safeAreaInset(edge: .bottom) { if builder.canBuild && outfit != nil { actionBar } }
+        // Solid status-bar area, so rows scrolling up don't show behind the clock.
+        .overlay(alignment: .top) {
+            Color.clear.frame(height: 0)
+                .background(Color(.systemBackground).ignoresSafeArea(edges: .top))
+        }
         .overlay(alignment: .top) { if logged { loggedToast } }
         .toolbar(.hidden, for: .navigationBar)
         .sensoryFeedback(.selection, trigger: outfit?.id)
@@ -77,12 +85,12 @@ struct OutfitsView: View {
     /// Card height per row: a body-shaped stack, shoes small, tops and dresses big.
     static func height(for slot: OutfitSlot) -> CGFloat {
         switch slot {
-        case .layer: 116
-        case .top: 132
-        case .dress: 200
-        case .bottom: 150
-        case .shoes: 78
-        case .accessory: 64
+        case .layer: 92
+        case .top: 112
+        case .dress: 172
+        case .bottom: 124
+        case .shoes: 60
+        case .accessory: 52
         }
     }
 
@@ -130,55 +138,17 @@ struct OutfitsView: View {
         .padding(.horizontal, Theme.pad)
     }
 
-    private func summary(_ outfit: Outfit) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 14) {
-                StyleMeter(score: outfit.styleScore)
-                VStack(alignment: .leading, spacing: 4) {
-                    if let index = builder.pickIndex {
-                        Label("ClosetWise pick #\(index + 1)", systemImage: "sparkles")
-                            .font(.caption2.weight(.bold)).foregroundStyle(Theme.primary)
-                            .contentTransition(.numericText(value: Double(index)))
-                    } else {
-                        Label("Your mix", systemImage: "hand.draw")
-                            .font(.caption2.weight(.bold)).foregroundStyle(Theme.secondaryText)
-                    }
-                    Text(outfit.title).font(.headline).foregroundStyle(Theme.ink)
-                    Text(outfit.reason).font(.subheadline).foregroundStyle(Theme.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .contentTransition(.opacity)
-                }
-                Spacer(minLength: 0)
-            }
-            HStack(spacing: 10) {
-                feedbackButton(loved ? "heart.fill" : "heart", label: loved ? "Loved" : "Love it", active: loved) {
-                    store.react(to: outfit, loved ? .fine : .loved)
-                    if loved { store.lovedCombos.remove(outfit.id); store.save() }
-                }
-                feedbackButton("hand.thumbsdown", label: "Not for me", active: false) {
-                    store.react(to: outfit, .notMe)
-                    withAnimation(.snappy) { builder.nextPick() }
-                }
-                Spacer(minLength: 0)
-            }
-        }
-        .padding(16)
-        .background(Theme.mint, in: RoundedRectangle(cornerRadius: 18))
-        .padding(.horizontal, Theme.pad)
-        .animation(.snappy, value: outfit.id)
+    private func toggleLove() {
+        guard let outfit else { return }
+        let wasLoved = loved
+        store.react(to: outfit, wasLoved ? .fine : .loved)
+        if wasLoved { store.lovedCombos.remove(outfit.id); store.save() }
     }
 
-    private func feedbackButton(_ icon: String, label: String, active: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(label, systemImage: icon)
-                .font(.caption.weight(.semibold))
-                .symbolEffect(.bounce, value: active)
-                .foregroundStyle(active ? .white : Theme.ink)
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                .background(active ? Theme.primary : Color(.systemBackground), in: Capsule())
-                .overlay(Capsule().stroke(active ? .clear : Theme.border))
-        }
-        .buttonStyle(.plain)
+    private func dislike() {
+        guard let outfit else { return }
+        store.react(to: outfit, .notMe)
+        withAnimation(.snappy) { builder.nextPick() }
     }
 
     /// What the sparkles mean, and a one-tap way to wear the suggestions.
@@ -316,7 +286,7 @@ private struct SlotRow: View {
     private var index: Int { row.entries.firstIndex { $0.id == position } ?? 0 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Text(row.slot.title.uppercased())
                     .font(.caption2.weight(.bold)).foregroundStyle(Theme.secondaryText)
@@ -329,9 +299,10 @@ private struct SlotRow: View {
                     .font(.caption2.monospacedDigit()).foregroundStyle(Theme.secondaryText)
                 Button(action: toggleLock) {
                     Image(systemName: locked ? "lock.fill" : "lock.open")
-                        .font(.caption.weight(.semibold))
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(locked ? .white : Theme.secondaryText)
-                        .frame(width: 30, height: 30)
+                        .frame(width: 26, height: 26)
+                        .contentShape(Rectangle().inset(by: -8))
                         .background(locked ? Theme.primary : Theme.mint, in: Circle())
                         .contentTransition(.symbolEffect(.replace))
                 }
@@ -425,21 +396,21 @@ private struct SlotRow: View {
 /// How much the look is "you", as a ring.
 private struct StyleMeter: View {
     let score: Int
+    var size: CGFloat = 52
 
     var body: some View {
         ZStack {
-            Circle().stroke(Theme.primary.opacity(0.15), lineWidth: 5)
+            Circle().stroke(Theme.primary.opacity(0.15), lineWidth: size * 0.1)
             Circle()
                 .trim(from: 0, to: CGFloat(min(100, max(0, score))) / 100)
-                .stroke(Theme.primary, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                .stroke(Theme.primary, style: StrokeStyle(lineWidth: size * 0.1, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-            VStack(spacing: 0) {
-                Text("\(score)").font(.subheadline.weight(.bold).monospacedDigit()).foregroundStyle(Theme.ink)
-                    .contentTransition(.numericText(value: Double(score)))
-                Text("you").font(.system(size: 9, weight: .medium)).foregroundStyle(Theme.secondaryText)
-            }
+            Text("\(score)")
+                .font(.system(size: size * 0.36, weight: .bold, design: .rounded).monospacedDigit())
+                .foregroundStyle(Theme.ink)
+                .contentTransition(.numericText(value: Double(score)))
         }
-        .frame(width: 52, height: 52)
+        .frame(width: size, height: size)
         .animation(.snappy, value: score)
         .accessibilityElement()
         .accessibilityLabel("\(score) percent your style")
@@ -462,5 +433,69 @@ private struct SuggestedBadge: View {
             .padding(6)
             .transition(.scale.combined(with: .opacity))
             .accessibilityLabel(source == .gemini ? "Suggested by Gemini" : "Suggested by ClosetWise")
+    }
+}
+
+// MARK: - Summary strip
+
+/// Pinned at the top: how "you" the look is, which pick it is, and one line on why — plus love / not for me.
+/// Tap to read the full reason.
+private struct SummaryStrip: View {
+    let outfit: Outfit
+    let pick: Int?
+    let loved: Bool
+    let love: () -> Void
+    let dislike: () -> Void
+    @State private var expanded = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            StyleMeter(score: outfit.styleScore, size: 40)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    if let pick {
+                        Text("#\(pick + 1)")
+                            .font(.caption.weight(.heavy).monospacedDigit())
+                            .foregroundStyle(Theme.primary)
+                            .contentTransition(.numericText(value: Double(pick)))
+                    }
+                    Text(outfit.title)
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
+                        .lineLimit(1)
+                }
+                Text(outfit.reason)
+                    .font(.caption).foregroundStyle(Theme.secondaryText)
+                    .lineLimit(expanded ? nil : 1)
+                    .fixedSize(horizontal: false, vertical: expanded)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture { withAnimation(.snappy) { expanded.toggle() } }
+
+            iconButton(loved ? "heart.fill" : "heart", tint: loved ? .pink : Theme.secondaryText, active: loved, action: love)
+                .accessibilityLabel(loved ? "Unlove this look" : "Love this look")
+            iconButton("hand.thumbsdown", tint: Theme.secondaryText, active: false, action: dislike)
+                .accessibilityLabel("Not for me")
+        }
+        .padding(.leading, 10).padding(.trailing, 8).padding(.vertical, 8)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Theme.border.opacity(0.6), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
+        .padding(.horizontal, Theme.pad)
+        .padding(.vertical, 4)
+        .animation(.snappy, value: outfit.id)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func iconButton(_ icon: String, tint: Color, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+                .symbolEffect(.bounce, value: active)
+                .frame(width: 34, height: 34)
+                .background(Color(.systemBackground).opacity(0.8), in: Circle())
+        }
+        .buttonStyle(.plain)
     }
 }
