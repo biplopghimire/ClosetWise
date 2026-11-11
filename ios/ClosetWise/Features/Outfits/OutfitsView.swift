@@ -150,22 +150,32 @@ struct OutfitsView: View {
         withAnimation(.snappy) { builder.nextPick() }
     }
 
+    /// "Next pick" walks ClosetWise's overall ranking. With a piece locked the ranking is about
+    /// outfits built around it: "Style it" for the best one, then "Next match".
+    private var pickButtonTitle: String {
+        if builder.locked.isEmpty { return "Next pick" }
+        return builder.pickIndex == nil ? "Style it" : "Next match"
+    }
+
     /// Two clear actions: see ClosetWise's next pick, or wear this one.
     private var actionBar: some View {
         HStack(spacing: 12) {
             Button {
                 withAnimation(.snappy) { builder.nextPick() }
             } label: {
-                Label("Next pick", systemImage: "sparkles")
+                Label(pickButtonTitle, systemImage: builder.locked.isEmpty ? "sparkles" : "wand.and.stars")
                     .symbolEffect(.bounce, value: builder.pickCount)
                     .font(.subheadline.weight(.semibold))
+                    .contentTransition(.opacity)
                 .frame(maxWidth: .infinity, minHeight: 54)
                 .foregroundStyle(Theme.primary)
                 .background(Theme.mint, in: RoundedRectangle(cornerRadius: 16))
             }
             .buttonStyle(.plain)
             .disabled(builder.picks.isEmpty)
-            .accessibilityHint("Shows ClosetWise's next-best outfit, each one different from the last")
+            .accessibilityHint(builder.locked.isEmpty
+                ? "Shows ClosetWise's next-best outfit, each one different from the last"
+                : "Shows the next-best outfit that keeps your locked pieces")
 
             Button {
                 guard let outfit else { return }
@@ -409,7 +419,7 @@ private struct SummaryStrip: View {
     @State private var expanded = false
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             StyleMeter(score: outfit.styleScore, size: 40)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
@@ -422,11 +432,12 @@ private struct SummaryStrip: View {
                     Text(outfit.title)
                         .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
                 Text(outfit.reason)
                     .font(.caption).foregroundStyle(Theme.secondaryText)
-                    .lineLimit(expanded ? nil : 1)
-                    .fixedSize(horizontal: false, vertical: expanded)
+                    .lineLimit(expanded ? nil : 2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
@@ -453,7 +464,7 @@ private struct SummaryStrip: View {
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(tint)
                 .symbolEffect(.bounce, value: active)
-                .frame(width: 34, height: 34)
+                .frame(width: 32, height: 32)
                 .background(Color(.systemBackground).opacity(0.8), in: Circle())
         }
         .buttonStyle(.plain)
