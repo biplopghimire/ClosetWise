@@ -10,7 +10,7 @@ enum StyleService {
         var errorDescription: String? {
             switch self {
             case .notConfigured: "Connect Supabase (Config/Secrets.xcconfig) so ClosetWise can write this."
-            case .notSignedIn: "Couldn't sign in to Supabase — check that anonymous sign-ins are on and you're online."
+            case .notSignedIn: "You need to be signed in and online. Check Settings → Account."
             case .busy: "The fitting room's packed right now — try again in a minute. Your learned style above is still up to date."
             }
         }
@@ -53,7 +53,7 @@ enum StyleService {
         do {
             response = try await client.functions.invoke(
                 "gemini",
-                options: FunctionInvokeOptions(body: Request(profile: store.styleContext, inspiration_images: images))
+                options: SupabaseService.geminiOptions(body: Request(profile: store.styleContext, inspiration_images: images))
             )
         } catch FunctionsError.httpError(let code, _) where code == 503 {
             throw StyleError.busy

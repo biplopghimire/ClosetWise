@@ -78,7 +78,7 @@ enum PurchaseCheckService {
         )
         progress?.step(2)
         do {
-            let judgment: Judgment = try await client.functions.invoke("gemini", options: FunctionInvokeOptions(body: request))
+            let judgment: Judgment = try await client.functions.invoke("gemini", options: SupabaseService.geminiOptions(body: request))
             progress?.succeed("ClosetWise agrees with the evidence below" + (judgment.verdict == r.verdict.rawValue ? "." : " — see its verdict above."))
             return judgment
         } catch FunctionsError.httpError(let code, _) where code == 503 {

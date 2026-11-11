@@ -73,7 +73,7 @@ enum ClosetPhotoPicker {
         let thumbs = photos.compactMap { $0.resized(maxSide: 512).jpegData(compressionQuality: 0.7)?.base64EncodedString() }
         do {
             let r: Response = try await client.functions.invoke(
-                "gemini", options: FunctionInvokeOptions(body: Request(name: item.name, category: item.category.rawValue, images: thumbs)))
+                "gemini", options: SupabaseService.geminiOptions(body: Request(name: item.name, category: item.category.rawValue, images: thumbs)))
             guard photos.indices.contains(r.index) else { return nil }
             return Pick(index: r.index, shows: r.shows, box: r.box_2d)
         } catch {

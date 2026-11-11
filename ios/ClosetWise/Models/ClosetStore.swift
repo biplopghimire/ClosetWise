@@ -83,14 +83,16 @@ final class ClosetStore {
                                      profile: UserProfile(name: "Jamie", onboarded: true), persist: false)
 
     /// Fills the closet with the sample wardrobe, outfit history and checks (for demos).
-    func loadDemo() {
+    /// Adds the demo closet with ids made for `account` (see `SampleData.demo(for:)`).
+    func loadDemo(account: UUID?) {
+        let demo = SampleData.demo(for: account)
         let existing = Set(items.map(\.id))
-        items += SampleData.wardrobe.filter { !existing.contains($0.id) }
-        logs += SampleData.outfitLogs.filter { log in !logs.contains { $0.id == log.id } }
-        purchases += SampleData.purchaseHistory.filter { r in !purchases.contains { $0.id == r.id } }
-        removedItemIDs.subtract(SampleData.wardrobe.map(\.id))
-        removedLogIDs.subtract(SampleData.outfitLogs.map(\.id))
-        removedCheckIDs.subtract(SampleData.purchaseHistory.map(\.id))
+        items += demo.items.filter { !existing.contains($0.id) }
+        logs += demo.logs.filter { log in !logs.contains { $0.id == log.id } }
+        purchases += demo.purchases.filter { r in !purchases.contains { $0.id == r.id } }
+        removedItemIDs.subtract(demo.items.map(\.id))
+        removedLogIDs.subtract(demo.logs.map(\.id))
+        removedCheckIDs.subtract(demo.purchases.map(\.id))
         save()
     }
 
@@ -108,7 +110,31 @@ final class ClosetStore {
         save()
     }
 
-    var hasDemoItems: Bool { items.contains { item in SampleData.wardrobe.contains { $0.id == item.id } } }
+    /// Removes only the demo closet: its pieces, outfits and checks. Pieces you added yourself
+    /// (and any demo piece you gave a real photo), and outfits and checks you logged, stay;
+    /// your outfits just lose any removed demo pieces. Removals sync like any other delete.
+    func removeDemo() {
+        let demoItems = Set(items.filter { SampleData.isDemoItem($0.id) && $0.photo == nil }.map(\.id))
+        let demoLogs = logs.filter { SampleData.isDemoLog($0.id) }.map(\.id)
+        let demoChecks = purchases.filter { SampleData.isDemoCheck($0.id) }.map(\.id)
+        items.removeAll { demoItems.contains($0.id) }
+        logs.removeAll { SampleData.isDemoLog($0.id) }
+        purchases.removeAll { SampleData.isDemoCheck($0.id) }
+        for i in logs.indices where logs[i].itemIDs.contains(where: demoItems.contains) {
+            logs[i].itemIDs.removeAll(where: demoItems.contains)
+            logs[i].updatedAt = .now
+        }
+        removedItemIDs.formUnion(demoItems)
+        removedLogIDs.formUnion(demoLogs)
+        removedCheckIDs.formUnion(demoChecks)
+        save()
+    }
+
+    var hasDemoItems: Bool { items.contains { SampleData.isDemoItem($0.id) } }
+    /// Any demo piece, outfit or check left in the closet.
+    var hasDemoData: Bool {
+        items.contains { SampleData.isDemoItem($0.id) && $0.photo == nil } || logs.contains { SampleData.isDemoLog($0.id) } || purchases.contains { SampleData.isDemoCheck($0.id) }
+    }
 
     func save() {
         guard persist else { return }

@@ -145,4 +145,60 @@ final class SyncMergeTests: XCTestCase {
         XCTAssertTrue(SampleData.outfitLogs.allSatisfy { $0.id.uuidString.hasPrefix("00000000-0000-0000-0000-") })
         XCTAssertTrue(SampleData.purchaseHistory.allSatisfy { $0.id.uuidString.hasPrefix("00000000-0000-0000-0000-") })
     }
+
+    func testRemovingDemoKeepsYourOwnPieces() {
+        // An older closet: demo loaded with the plain sample ids, plus real pieces added on top.
+        var mine = tee()
+        mine.photo = "my-tee.png"
+        let check = PurchaseRecord(product: tee(), verdict: "Skip", styleScore: 50, similarCount: 2, outfitCount: 1, decision: .skipped)
+        let mixedLog = OutfitLog(date: t0, itemIDs: [mine.id, SampleData.wideLegJeans.id])
+        let store = ClosetStore(items: [mine], logs: [mixedLog], purchases: [check], persist: false)
+        store.loadDemo(account: nil)
+        let photographed = store.items.firstIndex { $0.id == SampleData.loafers.id }!
+        store.items[photographed].photo = "my-loafers.png"   // a demo piece you gave a real photo
+        XCTAssertTrue(store.hasDemoData)
+
+        store.removeDemo()
+
+        XCTAssertEqual(store.items.map(\.id), [mine.id, SampleData.loafers.id], "your pieces and photographed ones stay")
+        XCTAssertEqual(store.logs.map(\.id), [mixedLog.id], "your outfit stays")
+        XCTAssertEqual(store.logs.first?.itemIDs, [mine.id], "…without the demo jeans")
+        XCTAssertEqual(store.purchases.map(\.id), [check.id])
+        XCTAssertFalse(store.hasDemoData)
+        XCTAssertEqual(store.removedItemIDs, Set(SampleData.wardrobe.map(\.id)).subtracting([SampleData.loafers.id]),
+                       "the other demo pieces are deleted on sync too")
+        XCTAssertEqual(store.removedLogIDs, Set(SampleData.outfitLogs.map(\.id)))
+        XCTAssertEqual(store.removedCheckIDs, Set(SampleData.purchaseHistory.map(\.id)))
+    }
+
+    func testDemoIDsAreStablePerAccountAndDistinctAcrossAccounts() {
+        let alice = UUID(), bob = UUID()
+        let a1 = SampleData.demo(for: alice), a2 = SampleData.demo(for: alice), b = SampleData.demo(for: bob)
+
+        // Same account: loading again (or on another phone) gives the same rows.
+        XCTAssertEqual(a1.items.map(\.id), a2.items.map(\.id))
+        XCTAssertEqual(a1.logs.map(\.id), a2.logs.map(\.id))
+        XCTAssertEqual(a1.purchases.map(\.id), a2.purchases.map(\.id))
+
+        // Two accounts on one project never share a row id.
+        let aliceIDs = Set(a1.items.map(\.id) + a1.logs.map(\.id) + a1.purchases.map(\.id))
+        let bobIDs = Set(b.items.map(\.id) + b.logs.map(\.id) + b.purchases.map(\.id))
+        XCTAssertTrue(aliceIDs.isDisjoint(with: bobIDs))
+        XCTAssertTrue(aliceIDs.isDisjoint(with: Set(SampleData.wardrobe.map(\.id))))
+
+        // Outfits still point at that account's demo items, and they're recognised as demo.
+        let itemIDs = Set(a1.items.map(\.id))
+        XCTAssertTrue(a1.logs.allSatisfy { $0.itemIDs.allSatisfy(itemIDs.contains) })
+        XCTAssertTrue(a1.items.allSatisfy { SampleData.isDemoItem($0.id) })
+        XCTAssertFalse(SampleData.isDemoItem(UUID()))
+
+        // No account (Supabase not set up): the plain sample ids.
+        XCTAssertEqual(SampleData.demo(for: nil).items.map(\.id), SampleData.wardrobe.map(\.id))
+
+        let store = ClosetStore(items: [], logs: [], purchases: [], persist: false)
+        store.loadDemo(account: alice)
+        store.loadDemo(account: alice)
+        XCTAssertEqual(store.items.count, SampleData.wardrobe.count, "loading twice doesn't duplicate")
+        XCTAssertTrue(store.hasDemoItems && store.hasOnlyDemoItems)
+    }
 }

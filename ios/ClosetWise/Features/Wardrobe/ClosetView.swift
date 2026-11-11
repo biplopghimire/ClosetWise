@@ -54,7 +54,7 @@ struct ClosetView: View {
                 .font(.subheadline).foregroundStyle(Theme.secondaryText).multilineTextAlignment(.center)
             PrimaryButton(title: "Add a piece", systemImage: "camera") { router.tab = .add }
                 .frame(maxWidth: 260)
-            Button("Load the demo closet") { store.loadDemo() }.font(.subheadline.weight(.medium))
+            Button("Load the demo closet") { store.loadDemo(account: Cloud.shared.accountID) }.font(.subheadline.weight(.medium))
             Spacer()
         }
         .padding(Theme.pad)

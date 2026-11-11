@@ -15,4 +15,10 @@ enum SupabaseService {
     }()
 
     static var isConfigured: Bool { client != nil }
+
+    /// Options for calling the `gemini` Edge Function. Sends the user's Gemini key
+    /// (Settings → Gemini API key) in `x-gemini-key` so calls use their own quota.
+    static func geminiOptions(body: some Encodable) -> FunctionInvokeOptions {
+        FunctionInvokeOptions(headers: GeminiKey.current.map { ["x-gemini-key": $0] } ?? [:], body: body)
+    }
 }

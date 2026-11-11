@@ -160,3 +160,19 @@ struct GarmentPiece: View {
         }
     }
 }
+
+/// The ClosetWise logo (the app icon artwork), with iOS's rounded-square corners.
+struct AppLogo: View {
+    var size: CGFloat = 72
+
+    var body: some View {
+        Image("Logo")
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .clipShape(RoundedRectangle(cornerRadius: size * 0.2237, style: .continuous))
+            .shadow(color: .black.opacity(0.12), radius: size * 0.08, y: size * 0.05)
+            .accessibilityLabel("ClosetWise")
+    }
+}

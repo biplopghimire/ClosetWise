@@ -2,13 +2,13 @@ import Foundation
 import Observation
 import Supabase
 
-/// Signs in silently (anonymous Supabase user) and keeps the phone and the account in step:
+/// Keeps the phone and the signed-in account (email + password) in step:
 /// items (+ photos and embeddings), outfit logs and wear events, purchase checks and the
 /// style profile. A full sync pulls the account's copy first (merge rules in `SyncMerge.swift`),
 /// then pushes this phone's. Every upsert is idempotent, so a sync can run any number of times.
 ///
-/// Anonymous accounts live only as long as the app's keychain session. Saving the closet to an
-/// email (a 6-digit code) makes it permanent, and the same email signs another phone in.
+/// With Supabase configured, the app asks for an account before anything else (`AuthView`).
+/// Phones still on an old anonymous session are upgraded in place when they sign up.
 @MainActor
 @Observable
 final class Cloud {
@@ -18,7 +18,7 @@ final class Cloud {
         case notConfigured
         case signingIn
         case signedIn
-        case anonymousDisabled
+        case signedOut
         case failed(String)
 
         var message: String {
@@ -26,23 +26,34 @@ final class Cloud {
             case .notConfigured: "Saved on this phone — Supabase isn't configured"
             case .signingIn: "Connecting…"
             case .signedIn: "Synced to your account"
-            case .anonymousDisabled: "Turn on anonymous sign-ins in Supabase to sync and get ClosetWise's AI reads"
+            case .signedOut: "Sign in to sync your closet and use ClosetWise's AI reads"
             case .failed(let why): "Offline — saved on this phone (\(why))"
             }
         }
     }
 
-    private(set) var status: Status = SupabaseService.isConfigured ? .signingIn : .notConfigured
+    private(set) var status: Status = {
+        guard let client = SupabaseService.client else { return .notConfigured }
+        guard let session = client.auth.currentSession, !session.user.isAnonymous else { return .signedOut }
+        return .signingIn
+    }()
     private(set) var syncing = false
     private(set) var lastSync: Date?
     private(set) var lastError: String?
-    /// The email the closet is saved to; nil while the account is anonymous.
+    /// The signed-in account's email.
     private(set) var email: String?
 
     @ObservationIgnored private var pending: Task<Void, Never>?
     @ObservationIgnored private let defaults = UserDefaults.standard
 
     var isSignedIn: Bool { status == .signedIn }
+    /// The signed-in user's id (also an old anonymous one), used to give the demo closet its own ids.
+    var accountID: UUID? { SupabaseService.client?.auth.currentUser?.id }
+    /// Supabase is set up but nobody is signed in: the app shows `AuthView` first.
+    /// (Unit tests host the app, so they never see it.)
+    var needsAccount: Bool {
+        status == .signedOut && ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+    }
 
     // MARK: Session
 
@@ -60,24 +71,23 @@ final class Cloud {
         await sync(store, pull: true)
     }
 
-    /// Returns the signed-in user's id, signing in anonymously the first time.
+    /// Returns the signed-in user's id, or nil (status `.signedOut`) when there's no account
+    /// session. An old anonymous session counts as signed out; `signUp` upgrades it.
     @discardableResult
     func ensureSession() async -> UUID? {
         guard let client = SupabaseService.client else { status = .notConfigured; return nil }
-        if let session = try? await client.auth.session {
-            status = .signedIn
-            email = session.user.isAnonymous ? nil : session.user.email
-            return session.user.id
+        guard let stored = client.auth.currentSession, !stored.user.isAnonymous else {
+            status = .signedOut
+            return nil
         }
-        status = .signingIn
+        email = stored.user.email
         do {
-            let session = try await client.auth.signInAnonymously()
+            let session = try await client.auth.session   // refreshes an expired token
             status = .signedIn
-            email = nil
             return session.user.id
         } catch {
-            let text = "\(error)".lowercased()
-            status = text.contains("anonymous") ? .anonymousDisabled : .failed(Self.short(error))
+            // Offline or the refresh failed: keep the account, sync again later.
+            status = .failed(Self.short(error))
             return nil
         }
     }
@@ -200,7 +210,7 @@ final class Cloud {
         if fetched > 0 { store.items = store.items }   // redraw tiles with the new photos
     }
 
-    // MARK: Account (email code)
+    // MARK: Account (email + password)
 
     enum AccountError: LocalizedError {
         case notConnected, message(String)
@@ -212,42 +222,72 @@ final class Cloud {
         }
     }
 
-    /// Step 1 of saving this closet to an email: Supabase emails a code to confirm the address.
-    func sendSaveCode(to email: String) async throws {
-        guard let client = SupabaseService.client, await ensureSession() != nil else { throw AccountError.notConnected }
-        do { _ = try await client.auth.update(user: UserAttributes(email: email)) } catch { throw Self.friendly(error) }
-    }
-
-    /// Step 2: the code makes the account permanent. Same user id, so nothing needs to move.
-    func confirmSaveCode(email: String, code: String, store: ClosetStore) async throws {
+    /// Creates an account. A phone still on an old anonymous session is upgraded in place
+    /// (same user id), so the closet it already synced stays with it.
+    func signUp(email: String, password: String, store: ClosetStore) async throws {
         guard let client = SupabaseService.client else { throw AccountError.notConnected }
         do {
-            let response = try await client.auth.verifyOTP(email: email, token: code, type: .emailChange)
-            self.email = response.user.email ?? email
-        } catch { throw Self.friendly(error) }
-        await sync(store)
+            if let session = client.auth.currentSession, session.user.isAnonymous {
+                let user = try await client.auth.update(user: UserAttributes(email: email))
+                guard user.email?.lowercased() == email else {
+                    throw AccountError.message("Email sign-ups need \"Confirm email\" turned off in Supabase (Authentication → Sign In / Providers → Email).")
+                }
+                _ = try await client.auth.update(user: UserAttributes(password: password))
+            } else {
+                let response = try await client.auth.signUp(email: email, password: password)
+                guard response.session != nil else {
+                    throw AccountError.message("Email sign-ups need \"Confirm email\" turned off in Supabase (Authentication → Sign In / Providers → Email).")
+                }
+            }
+        } catch let error as AccountError { throw error } catch { throw Self.friendly(error) }
+        self.email = email
+        status = .signedIn
+        await sync(store, pull: true)
     }
 
-    /// Signing in on another phone: Supabase emails a code (only to an existing account).
-    func sendSignInCode(to email: String) async throws {
+    /// Signs in to an existing account and replaces this phone's closet with the account's.
+    func signIn(email: String, password: String, store: ClosetStore) async throws {
+        guard let client = SupabaseService.client else { throw AccountError.notConnected }
+        do {
+            let session = try await client.auth.signIn(email: email, password: password)
+            self.email = session.user.email ?? email
+        } catch { throw Self.friendly(error) }
+        await didSwitchAccount(store)
+    }
+
+    /// Forgot password, step 1: Supabase emails a one-time code (only to an existing account).
+    func sendResetCode(to email: String) async throws {
         guard let client = SupabaseService.client else { throw AccountError.notConnected }
         do { try await client.auth.signInWithOTP(email: email, shouldCreateUser: false) } catch { throw Self.friendly(error) }
     }
 
-    /// Replaces this phone's closet with the account's.
-    func confirmSignIn(email: String, code: String, store: ClosetStore) async throws {
+    /// Forgot password, step 2: the code signs in, then the new password is set.
+    /// Also how accounts made with the old email-code sign-in get a password.
+    func resetPassword(email: String, code: String, newPassword: String, store: ClosetStore) async throws {
         guard let client = SupabaseService.client else { throw AccountError.notConnected }
         do {
             let response = try await client.auth.verifyOTP(email: email, token: code, type: .email)
             self.email = response.user.email ?? email
-            status = .signedIn
+            _ = try await client.auth.update(user: UserAttributes(password: newPassword))
         } catch { throw Self.friendly(error) }
+        await didSwitchAccount(store)
+    }
+
+    private func didSwitchAccount(_ store: ClosetStore) async {
+        status = .signedIn
         resetCaches()
         store.resetForNewAccount(onboarded: true)
         await sync(store, pull: true)
     }
 
-    /// Signs out and starts over as a new, empty anonymous closet.
+    /// Sets (or changes) the signed-in account's password. No email needed, so accounts from the
+    /// old email-code sign-in can get a password even when Supabase's mailer isn't delivering.
+    func setPassword(_ password: String) async throws {
+        guard let client = SupabaseService.client, isSignedIn else { throw AccountError.notConnected }
+        do { _ = try await client.auth.update(user: UserAttributes(password: password)) } catch { throw Self.friendly(error) }
+    }
+
+    /// Signs out; the phone's closet is cleared until someone signs in again.
     func signOut(store: ClosetStore) async {
         pending?.cancel()
         if let client = SupabaseService.client { try? await client.auth.signOut() }
@@ -255,7 +295,8 @@ final class Cloud {
         resetCaches()
         store.resetForNewAccount(onboarded: false)
         lastSync = nil
-        await ensureSession()
+        lastError = nil
+        status = .signedOut
     }
 
     private func resetCaches() {
@@ -265,19 +306,31 @@ final class Cloud {
 
     private static func friendly(_ error: Error) -> AccountError {
         let text = "\(error)".lowercased()
+        // Supabase rejects an address it can't email. With "Confirm email" on, its built-in
+        // mailer only sends to the project's team members, so any other address fails here.
+        if let auth = error as? AuthError,
+           ["email_address_invalid", "email_address_not_authorized"].contains(auth.errorCode.rawValue) {
+            return .message("Supabase wouldn't accept that address (\(auth.message)). If \"Confirm email\" is on in Supabase (Authentication → Sign In / Providers → Email), turn it off and save; otherwise check the address.")
+        }
+        if text.contains("invalid login credentials") || text.contains("invalid_credentials") {
+            return .message("That email and password don't match. Check them, or use \"Forgot password?\".")
+        }
         if text.contains("expired") || text.contains("invalid") && text.contains("otp") || text.contains("token has expired") {
             return .message("That code didn't work. Check it, or send a new one.")
         }
-        if text.contains("email_exists") || text.contains("already been registered") || text.contains("already registered") {
-            return .message("That email already has a ClosetWise closet. Use \"I already have an account\" to sign in with it.")
+        if text.contains("email_exists") || text.contains("user_already_exists") || text.contains("already been registered") || text.contains("already registered") {
+            return .message("That email already has a ClosetWise account. Sign in instead.")
+        }
+        if text.contains("weak_password") || text.contains("password should be") {
+            return .message("Pick a longer password: at least 8 characters.")
         }
         if text.contains("signups not allowed") || text.contains("otp_disabled") || text.contains("user not found") {
-            return .message("No ClosetWise closet uses that email yet.")
+            return .message("No ClosetWise account uses that email yet.")
         }
         if text.contains("rate limit") || text.contains("over_email_send_rate_limit") || text.contains("security purposes") {
-            return .message("Too many emails just now. Wait a minute, then try again.")
+            return .message("Too many tries just now. Wait a minute, then try again.")
         }
-        if text.contains("invalid") && text.contains("email") {
+        if text.contains("validation_failed") && text.contains("email") {
             return .message("That doesn't look like an email address.")
         }
         return .message(short(error))
@@ -324,7 +377,7 @@ final class Cloud {
             guard let name = item.photo, !embedded.contains(item.id.uuidString),
                   let jpeg = ClosetStore.photo(name)?.resized(maxSide: 768).jpegData(compressionQuality: 0.8) else { continue }
             guard let response: Response = try? await client.functions.invoke(
-                "gemini", options: FunctionInvokeOptions(body: Request(image_base64: jpeg.base64EncodedString()))),
+                "gemini", options: SupabaseService.geminiOptions(body: Request(image_base64: jpeg.base64EncodedString()))),
                   let vector = response.embedding, vector.count == 768 else { continue }
             if (try? await client.from("items").update(Update(embedding: vector)).eq("id", value: item.id.uuidString).execute()) != nil {
                 embedded.insert(item.id.uuidString)
