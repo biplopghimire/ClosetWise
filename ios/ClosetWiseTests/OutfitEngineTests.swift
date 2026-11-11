@@ -142,6 +142,26 @@ final class OutfitEngineTests: XCTestCase {
         XCTAssertEqual(withDress?.dress?.id, dress.id, "choosing a dress replaces the top and bottom")
     }
 
+    func testPicksAreGenuinelyDifferentOutfits() {
+        let ranked = OutfitEngine.rank(from: closet)
+        let picks = OutfitEngine.picks(from: ranked, limit: 10)
+        XCTAssertGreaterThanOrEqual(picks.count, 5)
+        XCTAssertEqual(picks.first?.id, ranked.first?.id, "pick #1 is the top-ranked outfit")
+        let core = { (o: Outfit) in Set(o.pieces.filter { [.top, .bottom, .dress, .shoes].contains($0.category) }.map(\.id)) }
+        for (i, a) in picks.enumerated() {
+            for b in picks.prefix(i) {
+                XCTAssertGreaterThanOrEqual(core(a).subtracting(core(b)).count, 2,
+                                            "\(a.pieces.map(\.name)) is too close to \(b.pieces.map(\.name))")
+            }
+        }
+
+        // With the top locked, picks still change both the bottom and the shoes.
+        let tee = SampleData.blackTee
+        let locked = OutfitEngine.picks(from: OutfitEngine.ranking(from: closet, locked: [tee]).outfits, fixed: [tee.id], limit: 10)
+        XCTAssertTrue(locked.allSatisfy { $0.top?.id == tee.id })
+        XCTAssertGreaterThanOrEqual(locked.count, 2)
+    }
+
     func testWarmthTargetsRiseAsItGetsColder() {
         XCTAssertLessThan(Warmth.target(forC: 30), Warmth.target(forC: 18))
         XCTAssertLessThan(Warmth.target(forC: 18), Warmth.target(forC: 2))

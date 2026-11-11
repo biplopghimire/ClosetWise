@@ -303,6 +303,33 @@ enum OutfitEngine {
 
     // MARK: Variety
 
+    /// The ranking as a list of genuinely different outfits, best first. Every pick changes at
+    /// least two of its main pieces (top, bottom or dress, shoes) that aren't `fixed`, compared
+    /// with every earlier pick — so #2 is never #1 with different shoes. With very few pieces to
+    /// vary it settles for one change rather than showing nothing.
+    static func picks(from ranked: [Outfit], fixed: Set<UUID> = [], limit: Int = 20) -> [Outfit] {
+        // Pieces compared by what they look like, so two identical white sneakers don't count as a change.
+        func core(_ o: Outfit) -> Set<String> {
+            Set(o.pieces.filter { [.top, .bottom, .dress, .shoes].contains($0.category) && !fixed.contains($0.id) }
+                .map { "\($0.category.rawValue)|\($0.name.lowercased())|\($0.color.lowercased())" })
+        }
+        func pass(needed: Int, into picked: inout [Outfit]) {
+            for outfit in ranked where picked.count < limit {
+                let mine = core(outfit)
+                guard !mine.isEmpty else { continue }
+                let distinct = picked.allSatisfy { other in
+                    let theirs = core(other)
+                    return mine.subtracting(theirs).count >= min(needed, max(mine.count, theirs.count))
+                }
+                if distinct { picked.append(outfit) }
+            }
+        }
+        var picked: [Outfit] = []
+        pass(needed: 2, into: &picked)
+        if picked.count < 3 { pass(needed: 1, into: &picked) }
+        return picked
+    }
+
     /// Greedy pick that keeps outfits from sharing most of their pieces or leaning on one piece.
     static func diverse(_ ranked: [Outfit], limit: Int) -> [Outfit] {
         var picked: [Outfit] = []

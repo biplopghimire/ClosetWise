@@ -20,6 +20,8 @@
 //     → { matches: [{ item_id, confidence }], not_in_closet: [string] }
 //   { "action": "read_product", page: { url, title, structured, meta, text }, image_base64? }
 //     → { product: { is_product, name, brand, price, currency, ...attribute fields } }
+//   { "action": "pair_pieces", locked: [piece], candidates: { slot: [piece] }, profile: StyleContext }
+//     → { picks: [{ slot, item_ids: [string] }], note }
 //   { "action": "pick_product_photo", name, category, images: ["<base64 jpeg>", …] }
 //     → { index, shows, box_2d: [ymin, xmin, ymax, xmax] (0–1000) }
 //
@@ -128,6 +130,32 @@ const STYLE_PROMPT = `You are a personal stylist reading a client's style profil
 (shares are recency-weighted, loved outfits count more). Inspiration photos, if any, are looks they're drawn to.
 Describe their real style in plain language. Where stated and learned disagree, say so gently
 (e.g. they want to dress more polished than they currently do). Mention fit and silhouette specifically.`;
+
+const PAIR_PROMPT = `You are a personal stylist working only with clothes this person already owns.
+They locked one or more pieces and want the best pieces to wear with them.
+For each slot in "candidates", pick up to 2 item ids (best first) that make the strongest outfit with the locked pieces,
+judged on colour, proportion and silhouette, how dressed-up the pieces are, and this person's style profile.
+Only use ids from the candidates. Skip a slot if nothing there works. Then write one short sentence (max 18 words)
+on why the top picks work, in second person, naming the pieces in plain words.`;
+
+const PAIR_SCHEMA = {
+  type: "object",
+  properties: {
+    picks: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          slot: { type: "string", enum: ["layer", "top", "dress", "bottom", "shoes", "accessory"] },
+          item_ids: { type: "array", items: { type: "string" } },
+        },
+        required: ["slot", "item_ids"],
+      },
+    },
+    note: { type: "string" },
+  },
+  required: ["picks", "note"],
+};
 
 const JUDGE_SCHEMA = {
   type: "object",
@@ -311,6 +339,16 @@ Deno.serve(async (req) => {
       const result = await generateJSON(key, parts, PHOTO_SCHEMA);
       result.index = Math.min(Math.max(0, Number(result.index) || 0), images.length - 1);
       return json(result);
+    }
+
+    if (action === "pair_pieces") {
+      const parts = [
+        { text: PAIR_PROMPT },
+        { text: `Locked JSON:\n${JSON.stringify(body.locked ?? [])}` },
+        { text: `Candidates JSON:\n${JSON.stringify(body.candidates ?? {})}` },
+        { text: `Profile JSON:\n${JSON.stringify(body.profile ?? {})}` },
+      ];
+      return json(await generateJSON(key, parts, PAIR_SCHEMA));
     }
 
     if (action === "judge_purchase") {

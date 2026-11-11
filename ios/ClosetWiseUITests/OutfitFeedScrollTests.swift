@@ -8,7 +8,7 @@ final class OutfitFeedScrollTests: XCTestCase {
         app.launch()
 
         app.tabBars.buttons["Outfits"].tap()
-        let shuffle = app.buttons["Shuffle"]
+        let shuffle = app.buttons["ClosetWise pick"]
         XCTAssertTrue(shuffle.waitForExistence(timeout: 10))
         let rows = app.scrollViews
         sleep(1)

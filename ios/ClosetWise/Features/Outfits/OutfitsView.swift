@@ -3,7 +3,8 @@ import SwiftUI
 /// The Outfits tab: build a look one row at a time.
 ///
 /// Each row is a piece of the outfit (layer, top, bottom or dress, shoes, accessory). Swipe a row
-/// to change just that piece; lock a row and Shuffle finds the best look around it. Occasion chips
+/// to change just that piece; "ClosetWise pick" steps through the best distinct looks, and locking a
+/// row re-ranks around it and marks suggested pieces with a sparkle. Occasion chips
 /// set how dressed up it should be.
 struct OutfitsView: View {
     @Environment(ClosetStore.self) private var store
@@ -21,11 +22,14 @@ struct OutfitsView: View {
                 if builder.canBuild, let outfit {
                     occasionChips
                     if builder.hasDresses && builder.hasSeparates { modePicker }
+                    if !builder.locked.isEmpty { suggestionBanner }
                     VStack(spacing: 14) {
                         ForEach(builder.rows) { row in
                             SlotRow(row: row, height: Self.height(for: row.slot),
                                     position: position(for: row.slot),
-                                    locked: builder.locked.contains(row.slot)) {
+                                    locked: builder.locked.contains(row.slot),
+                                    suggested: Set(builder.suggested[row.slot] ?? []),
+                                    source: builder.suggestionSource) {
                                 withAnimation(.snappy) { builder.toggleLock(row.slot) }
                             }
                         }
@@ -43,14 +47,14 @@ struct OutfitsView: View {
         .overlay(alignment: .top) { if logged { loggedToast } }
         .toolbar(.hidden, for: .navigationBar)
         .sensoryFeedback(.selection, trigger: outfit?.id)
-        .sensoryFeedback(.impact(weight: .medium), trigger: builder.shuffles)
+        .sensoryFeedback(.impact(weight: .medium), trigger: builder.pickCount)
         .sensoryFeedback(.success, trigger: logged) { _, new in new }
         .onAppear {
-            builder.configure(items: store.items, signals: store.outfitSignals)
+            builder.configure(items: store.items, signals: store.outfitSignals, profile: store.styleContext)
             startFromRouter()
         }
-        .onChange(of: store.items) { builder.configure(items: store.items, signals: store.outfitSignals) }
-        .onChange(of: store.preferences) { builder.configure(items: store.items, signals: store.outfitSignals) }
+        .onChange(of: store.items) { builder.configure(items: store.items, signals: store.outfitSignals, profile: store.styleContext) }
+        .onChange(of: store.preferences) { builder.configure(items: store.items, signals: store.outfitSignals, profile: store.styleContext) }
         .onChange(of: router.outfitStart) { startFromRouter() }
     }
 
@@ -127,15 +131,36 @@ struct OutfitsView: View {
     }
 
     private func summary(_ outfit: Outfit) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            StyleMeter(score: outfit.styleScore)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(outfit.title).font(.headline).foregroundStyle(Theme.ink)
-                Text(outfit.reason).font(.subheadline).foregroundStyle(Theme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .contentTransition(.opacity)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 14) {
+                StyleMeter(score: outfit.styleScore)
+                VStack(alignment: .leading, spacing: 4) {
+                    if let index = builder.pickIndex {
+                        Label("ClosetWise pick #\(index + 1)", systemImage: "sparkles")
+                            .font(.caption2.weight(.bold)).foregroundStyle(Theme.primary)
+                            .contentTransition(.numericText(value: Double(index)))
+                    } else {
+                        Label("Your mix", systemImage: "hand.draw")
+                            .font(.caption2.weight(.bold)).foregroundStyle(Theme.secondaryText)
+                    }
+                    Text(outfit.title).font(.headline).foregroundStyle(Theme.ink)
+                    Text(outfit.reason).font(.subheadline).foregroundStyle(Theme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .contentTransition(.opacity)
+                }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            HStack(spacing: 10) {
+                feedbackButton(loved ? "heart.fill" : "heart", label: loved ? "Loved" : "Love it", active: loved) {
+                    store.react(to: outfit, loved ? .fine : .loved)
+                    if loved { store.lovedCombos.remove(outfit.id); store.save() }
+                }
+                feedbackButton("hand.thumbsdown", label: "Not for me", active: false) {
+                    store.react(to: outfit, .notMe)
+                    withAnimation(.snappy) { builder.nextPick() }
+                }
+                Spacer(minLength: 0)
+            }
         }
         .padding(16)
         .background(Theme.mint, in: RoundedRectangle(cornerRadius: 18))
@@ -143,49 +168,68 @@ struct OutfitsView: View {
         .animation(.snappy, value: outfit.id)
     }
 
+    private func feedbackButton(_ icon: String, label: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(label, systemImage: icon)
+                .font(.caption.weight(.semibold))
+                .symbolEffect(.bounce, value: active)
+                .foregroundStyle(active ? .white : Theme.ink)
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(active ? Theme.primary : Color(.systemBackground), in: Capsule())
+                .overlay(Capsule().stroke(active ? .clear : Theme.border))
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// What the sparkles mean, and a one-tap way to wear the suggestions.
+    private var suggestionBanner: some View {
+        let anchor = builder.lockedItems.map { $0.name.lowercased() }.joined(separator: " and ")
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: builder.suggestionSource == .gemini ? "sparkles" : "wand.and.stars")
+                .foregroundStyle(Theme.primary)
+                .symbolEffect(.pulse, isActive: builder.suggesting)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(builder.suggesting ? "Gemini is picking pieces for your \(anchor)…"
+                     : builder.suggestionSource == .gemini ? "Gemini's picks for your \(anchor)" : "Best matches for your \(anchor)")
+                    .font(.caption.weight(.semibold)).foregroundStyle(Theme.ink)
+                Text(builder.suggestionNote ?? "Pieces marked with a sparkle go best with it.")
+                    .font(.caption).foregroundStyle(Theme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            if !builder.suggested.isEmpty {
+                Button("Wear picks") { withAnimation(.snappy) { builder.wearSuggestions() } }
+                    .font(.caption.weight(.semibold))
+            }
+        }
+        .padding(12)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.primary.opacity(0.35)))
+        .padding(.horizontal, Theme.pad)
+        .animation(.snappy, value: builder.suggestionSource)
+    }
+
+    /// Two clear actions: see ClosetWise's next pick, or wear this one.
     private var actionBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Button {
-                withAnimation(.snappy) { builder.shuffle() }
+                withAnimation(.snappy) { builder.nextPick() }
             } label: {
-                Label("Shuffle", systemImage: "dice")
-                    .symbolEffect(.bounce, value: builder.shuffles)
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity, minHeight: 50)
-                    .foregroundStyle(Theme.primary)
-                    .background(.background, in: RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.primary))
-            }
-            .accessibilityHint("Finds another outfit that keeps your locked pieces")
-
-            Button {
-                guard let outfit else { return }
-                store.react(to: outfit, loved ? .fine : .loved)
-                if loved { store.lovedCombos.remove(outfit.id); store.save() }
-            } label: {
-                Image(systemName: loved ? "heart.fill" : "heart")
-                    .symbolEffect(.bounce, value: loved)
-                    .font(.title3)
-                    .foregroundStyle(Theme.primary)
-                    .frame(width: 50, height: 50)
-                    .background(.background, in: RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.border))
-            }
-            .accessibilityLabel(loved ? "Unlove this look" : "Love this look")
-
-            Menu {
-                Button("Not for me", systemImage: "hand.thumbsdown") {
-                    guard let outfit else { return }
-                    store.react(to: outfit, .notMe)
-                    withAnimation(.snappy) { builder.shuffle() }
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles").symbolEffect(.bounce, value: builder.pickCount)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(builder.pickIndex == nil ? "ClosetWise pick" : "Next pick")
+                            .font(.subheadline.weight(.semibold))
+                        Text(pickCaption).font(.caption2).opacity(0.8)
+                            .contentTransition(.numericText())
+                    }
                 }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.title3)
-                    .foregroundStyle(Theme.secondaryText)
-                    .frame(width: 44, height: 50)
+                .frame(maxWidth: .infinity, minHeight: 54)
+                .foregroundStyle(Theme.primary)
+                .background(Theme.mint, in: RoundedRectangle(cornerRadius: 16))
             }
-            .accessibilityLabel("More")
+            .buttonStyle(.plain)
+            .disabled(builder.picks.isEmpty)
+            .accessibilityHint("Shows ClosetWise's next-best outfit, each one different from the last")
 
             Button {
                 guard let outfit else { return }
@@ -198,14 +242,23 @@ struct OutfitsView: View {
             } label: {
                 Label("Wear today", systemImage: "checkmark")
                     .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity, minHeight: 50)
+                    .frame(maxWidth: .infinity, minHeight: 54)
                     .foregroundStyle(.white)
-                    .background(Theme.primary, in: RoundedRectangle(cornerRadius: 14))
+                    .background(Theme.primary, in: RoundedRectangle(cornerRadius: 16))
             }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, Theme.pad)
-        .padding(.vertical, 10)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
         .background(.bar)
+    }
+
+    private var pickCaption: String {
+        let total = builder.picks.count
+        guard total > 0 else { return "No other looks" }
+        if let index = builder.pickIndex { return "#\(index + 1) of \(total) · tap for #\((index + 1) % total + 1)" }
+        return "Back to #1 of \(total)"
     }
 
     private var loggedToast: some View {
@@ -241,10 +294,13 @@ private struct SlotRow: View {
     let height: CGFloat
     @Binding var position: UUID?
     let locked: Bool
+    /// Pieces suggested to go with the locked ones (sparkle badge).
+    var suggested: Set<UUID> = []
+    var source: OutfitBuilder.SuggestionSource?
     let toggleLock: () -> Void
     /// Off while the row is placing itself, so layout settling isn't mistaken for a swipe.
     @State private var settled = false
-    /// The last piece the user swiped to, to tell their swipes apart from Shuffle's picks.
+    /// The last piece the user swiped to, to tell their swipes apart from ClosetWise picks.
     @State private var swipedTo: UUID?
 
     private var scrollBinding: Binding<UUID?> {
@@ -280,7 +336,7 @@ private struct SlotRow: View {
                         .contentTransition(.symbolEffect(.replace))
                 }
                 .accessibilityLabel(locked ? "Unlock \(row.slot.title.lowercased())" : "Lock \(row.slot.title.lowercased())")
-                .accessibilityHint("Locked pieces stay when you shuffle")
+                .accessibilityHint("Locked pieces stay when you ask for the next pick")
             }
             .padding(.horizontal, Theme.pad)
 
@@ -309,9 +365,9 @@ private struct SlotRow: View {
                 .contentMargins(.horizontal, max(0, (geo.size.width - cardWidth) / 2), for: .scrollContent)
                 .scrollDisabled(locked)
                 .onAppear { recentre(proxy) }
-                // Shuffle reorders the row: put the new pick in the middle again.
+                // A new pick reorders the row: put the new pick in the middle again.
                 .onChange(of: row.entries.map(\.id)) { recentre(proxy) }
-                // Shuffle (or a mode switch) picked a different piece: scroll to it.
+                // A new pick (or a mode switch) chose a different piece: scroll to it.
                 .onChange(of: position) { _, new in if new != swipedTo { recentre(proxy) } }
                 }
             }
@@ -348,6 +404,9 @@ private struct SlotRow: View {
         if let item = entry.item {
             ItemImage(item: item)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(alignment: .topTrailing) {
+                    if suggested.contains(item.id) { SuggestedBadge(source: source) }
+                }
         } else {
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(Theme.border, style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
@@ -384,5 +443,24 @@ private struct StyleMeter: View {
         .animation(.snappy, value: score)
         .accessibilityElement()
         .accessibilityLabel("\(score) percent your style")
+    }
+}
+
+// MARK: - Suggested badge
+
+/// Top-right sparkle on a piece suggested to go with the locked ones.
+private struct SuggestedBadge: View {
+    let source: OutfitBuilder.SuggestionSource?
+
+    var body: some View {
+        Image(systemName: "sparkles")
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(.white)
+            .frame(width: 24, height: 24)
+            .background(Theme.primary, in: Circle())
+            .overlay(Circle().stroke(.white, lineWidth: 2))
+            .padding(6)
+            .transition(.scale.combined(with: .opacity))
+            .accessibilityLabel(source == .gemini ? "Suggested by Gemini" : "Suggested by ClosetWise")
     }
 }

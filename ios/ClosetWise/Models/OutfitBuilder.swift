@@ -1,12 +1,16 @@
 import Foundation
 import Observation
 
-/// State for the Outfits screen: one outfit at a time, a swipeable row per slot, locks, Shuffle.
+/// State for the Outfits tab: one outfit at a time, a swipeable row per slot, locks, and
+/// ClosetWise's ranked picks.
+///
+/// "ClosetWise pick" walks down the ranking — #1, #2, #3 … — where every pick is a genuinely
+/// different outfit (at least two main pieces change), never #1 with new shoes. Locking a row
+/// re-ranks around that piece and asks Gemini which of the user's pieces go best with it; those
+/// get a sparkle badge in their rows.
 ///
 /// Rows are ordered once per outfit (best match for the rest of the outfit first) and keep that
-/// order while the user swipes, so pieces don't jump around under their finger. Shuffle draws
-/// the next-best varied outfit that keeps the locked pieces, and never repeats until it has
-/// shown everything it can make.
+/// order while the user swipes, so pieces don't jump around under their finger.
 @MainActor
 @Observable
 final class OutfitBuilder {
@@ -24,6 +28,9 @@ final class OutfitBuilder {
 
     enum Mode { case separates, dress }
 
+    /// Where the sparkle-badged pieces came from.
+    enum SuggestionSource: Equatable { case gemini, closetWise }
+
     static let noneID = UUID(uuidString: "00000000-0000-0000-0000-0000000F0000")!
 
     private(set) var outfit: Outfit?
@@ -32,39 +39,52 @@ final class OutfitBuilder {
     var selection: [OutfitSlot: UUID] = [:]
     private(set) var locked: Set<OutfitSlot> = []
     private(set) var occasion: Occasion?
-    /// Bumped on every Shuffle, for haptics and animations.
-    private(set) var shuffles = 0
+
+    /// ClosetWise's ranked, distinct outfits for the current locks and occasion.
+    private(set) var picks: [Outfit] = []
+    /// Which pick is showing (nil once the user swipes away from it).
+    private(set) var pickIndex: Int?
+    /// Bumped on every pick, for haptics and animations.
+    private(set) var pickCount = 0
+
+    /// Pieces suggested to go with the locked ones, per row (sparkle badge).
+    /// Best first.
+    private(set) var suggested: [OutfitSlot: [UUID]] = [:]
+    private(set) var suggestionSource: SuggestionSource?
+    private(set) var suggestionNote: String?
+    private(set) var suggesting = false
 
     @ObservationIgnored private var items: [WardrobeItem] = []
     @ObservationIgnored private var signals = StyleSignals()
-    @ObservationIgnored private var queue: [Outfit] = []
-    @ObservationIgnored private var shown: Set<String> = []
-    @ObservationIgnored private var seed = UInt64.random(in: 1...UInt64.max / 2)
+    @ObservationIgnored private var profile: StyleContext?
     @ObservationIgnored private var closetSignature = ""
+    @ObservationIgnored private var suggestionTask: Task<Void, Never>?
 
     var mode: Mode { outfit?.dress == nil ? .separates : .dress }
     var hasDresses: Bool { items.contains { $0.category == .dress } }
     var hasSeparates: Bool { items.contains { $0.category == .top } && items.contains { $0.category == .bottom } }
     /// The closet can make at least one outfit.
     var canBuild: Bool { items.contains { $0.category == .shoes } && (hasSeparates || hasDresses) }
+    var lockedItems: [WardrobeItem] { locked.compactMap { outfit?.item(in: $0) } }
 
     // MARK: Setup
 
     /// Call when the closet, style or weather changes. Keeps the current look if its pieces still exist.
-    func configure(items: [WardrobeItem], signals: StyleSignals) {
+    func configure(items: [WardrobeItem], signals: StyleSignals, profile: StyleContext) {
         var signals = signals
         signals.occasion = occasion
         let signature = items.map { "\($0.id)\($0.updatedAt?.timeIntervalSince1970 ?? 0)" }.joined()
         let closetChanged = signature != closetSignature
         self.items = items
         self.signals = signals
+        self.profile = profile
         closetSignature = signature
-        queue = []
-        if closetChanged { shown = [] }
-        if let outfit, outfit.pieces.allSatisfy({ p in items.contains { $0.id == p.id } }), !closetChanged {
+        if let outfit, !closetChanged, outfit.pieces.allSatisfy({ p in items.contains { $0.id == p.id } }) {
+            rerank(keepingCurrent: true)
             rebuild(around: outfit)
         } else {
-            shuffle()
+            rerank(keepingCurrent: false)
+            showPick(0)
         }
     }
 
@@ -72,56 +92,50 @@ final class OutfitBuilder {
     func start(with item: WardrobeItem) {
         guard let slot = OutfitSlot(item.category) else { return }
         locked = [slot]
-        queue = []
-        shown = []
-        if let look = OutfitEngine.best(from: items, locked: [item], signals: signals, limit: 1, seed: seed).first {
-            show(look)
-        } else if let look = OutfitEngine.outfits(with: item, from: items, signals: signals, limit: 1).first {
-            show(look)   // the weather or occasion ruled everything out; still show how to wear it
+        picks = OutfitEngine.picks(from: OutfitEngine.ranking(from: items, signals: signals, locked: [item]).outfits, fixed: [item.id])
+        if picks.isEmpty {
+            // The weather or occasion ruled everything out; still show how to wear it.
+            picks = OutfitEngine.outfits(with: item, from: items, signals: signals, limit: 10)
         }
+        showPick(0)
+        suggest()
     }
 
     // MARK: Actions
 
-    /// Next varied outfit that keeps the locked pieces.
-    func shuffle() {
-        guard canBuild else { outfit = nil; rows = []; return }
-        if queue.isEmpty { refill() }
-        if queue.isEmpty { shown = []; refill() }   // seen everything: go round again
-        guard !queue.isEmpty else { return }
-        // Prefer a look that changes most of the unlocked pieces, so Shuffle feels like a new outfit
-        // rather than the same one with different shoes.
-        let free = (outfit?.slots ?? []).filter { !locked.contains($0) && !$0.isOptional }
-        let index = queue.firstIndex { candidate in
-            let changed = free.filter { candidate.item(in: $0)?.id != outfit?.item(in: $0)?.id }.count
-            return changed * 2 >= max(1, free.count)
-        } ?? 0
-        show(queue.remove(at: index))
-        shuffles += 1
+    /// The next ClosetWise pick: #1, then #2 … and round again at the end.
+    func nextPick() {
+        guard !picks.isEmpty else { return }
+        let next = pickIndex.map { ($0 + 1) % picks.count } ?? 0
+        showPick(next)
+        pickCount += 1
     }
 
     func toggleLock(_ slot: OutfitSlot) {
         if locked.contains(slot) { locked.remove(slot) } else { locked.insert(slot) }
-        queue = []
+        rerank(keepingCurrent: true)
+        suggest()
     }
 
     func setOccasion(_ new: Occasion?) {
         guard new != occasion else { return }
         occasion = new
         signals.occasion = new
-        queue = []
-        shown = []
-        shuffle()
+        rerank(keepingCurrent: false)
+        showPick(0)
+        suggest()
     }
 
     /// Switches between separates and a dress, keeping shoes and layer if they're locked.
     func setMode(_ new: Mode) {
         guard new != mode else { return }
         locked.subtract([.top, .bottom, .dress])
-        queue = []
-        let keep = lockedItems
-        let looks = OutfitEngine.best(from: items, locked: keep, signals: signals, limit: 40, seed: seed &+ 7)
-        if let look = looks.first(where: { ($0.dress != nil) == (new == .dress) }) { show(look) }
+        let looks = OutfitEngine.best(from: items, locked: lockedItems, signals: signals, limit: 40)
+        let wanted = looks.filter { ($0.dress != nil) == (new == .dress) }
+        guard !wanted.isEmpty else { return }
+        picks = OutfitEngine.picks(from: wanted, fixed: Set(lockedItems.map(\.id)))
+        showPick(0)
+        suggest()
     }
 
     /// The user swiped a row to another piece.
@@ -131,25 +145,42 @@ final class OutfitBuilder {
         guard outfit.item(in: slot)?.id != entry.item?.id else { return }
         if let changed = OutfitEngine.replacing(slot, with: entry.item, in: outfit, from: items, signals: signals) {
             self.outfit = changed
+            pickIndex = picks.firstIndex { $0.id == changed.id }
         }
+    }
+
+    /// Puts the suggested pieces on: the top suggestion in every unlocked row.
+    func wearSuggestions() {
+        guard var look = outfit else { return }
+        for (slot, ids) in suggested where !locked.contains(slot) {
+            guard let bestID = ids.first, let best = items.first(where: { $0.id == bestID }),
+                  let changed = OutfitEngine.replacing(slot, with: best, in: look, from: items, signals: signals) else { continue }
+            look = changed
+        }
+        pickIndex = picks.firstIndex { $0.id == look.id }
+        rebuild(around: look)
     }
 
     // MARK: Internals
 
-    private var lockedItems: [WardrobeItem] { locked.compactMap { outfit?.item(in: $0) } }
-
-    private func refill() {
-        seed &+= 1
+    /// Re-ranks for the current locks and occasion. A locked empty slot (e.g. "no layer") keeps
+    /// outfits without one.
+    private func rerank(keepingCurrent: Bool) {
         let keep = lockedItems
-        // A locked empty slot (e.g. "no layer") keeps outfits without one.
         let emptyLocked = locked.filter { outfit?.item(in: $0) == nil }
-        queue = OutfitEngine.best(from: items, locked: keep, signals: signals, exclude: shown, limit: 30, seed: seed)
+        let ranked = OutfitEngine.ranking(from: items, signals: signals, locked: keep).outfits
             .filter { look in emptyLocked.allSatisfy { look.item(in: $0) == nil } }
+        picks = OutfitEngine.picks(from: ranked, fixed: Set(keep.map(\.id)))
+        pickIndex = keepingCurrent ? picks.firstIndex { $0.id == outfit?.id } : nil
     }
 
-    private func show(_ look: Outfit) {
-        shown.insert(look.id)
-        rebuild(around: look)
+    private func showPick(_ index: Int) {
+        guard canBuild, picks.indices.contains(index) else {
+            if !canBuild { outfit = nil; rows = [] }
+            return
+        }
+        pickIndex = index
+        rebuild(around: picks[index])
     }
 
     private func rebuild(around look: Outfit) {
@@ -162,5 +193,37 @@ final class OutfitBuilder {
             return Row(slot: slot, entries: entries)
         }
         selection = Dictionary(uniqueKeysWithValues: rows.map { ($0.slot, look.item(in: $0.slot)?.id ?? Self.noneID) })
+    }
+
+    /// Marks the pieces that go best with the locked ones. Shows ClosetWise's own best matches at
+    /// once, then Gemini's picks when they arrive (if there's a backend and a Gemini key).
+    private func suggest() {
+        suggestionTask?.cancel()
+        let anchors = lockedItems
+        guard !anchors.isEmpty, let look = outfit else {
+            suggested = [:]; suggestionSource = nil; suggestionNote = nil; suggesting = false
+            return
+        }
+        let open = look.slots.filter { !locked.contains($0) }
+        var candidates: [OutfitSlot: [WardrobeItem]] = [:]
+        for slot in open {
+            candidates[slot] = OutfitEngine.alternatives(for: slot, in: look, from: items, signals: signals)
+        }
+        // ClosetWise's best two per row, straight away.
+        suggested = candidates.mapValues { Array($0.prefix(2).map(\.id)) }
+        suggestionSource = .closetWise
+        suggestionNote = nil
+
+        guard let profile, SupabaseService.isConfigured, GeminiKey.current != nil else { return }
+        suggesting = true
+        suggestionTask = Task { [weak self] in
+            let result = try? await PairingService.picks(locked: anchors, candidates: candidates, profile: profile)
+            guard let self, !Task.isCancelled else { return }
+            self.suggesting = false
+            guard let result, !result.picks.isEmpty, Set(self.lockedItems.map(\.id)) == Set(anchors.map(\.id)) else { return }
+            self.suggested = result.picks.filter { !$0.value.isEmpty }
+            self.suggestionSource = .gemini
+            self.suggestionNote = result.note
+        }
     }
 }
