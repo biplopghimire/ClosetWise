@@ -168,3 +168,25 @@ final class OutfitEngineTests: XCTestCase {
         XCTAssertGreaterThan(Warmth.of(SampleData.wardrobe.first { $0.kind == .coat }!), Warmth.of(SampleData.blackTee))
     }
 }
+
+final class GuidedCameraTests: XCTestCase {
+    func testCropMapsTheOnScreenFrameOntoThePhoto() {
+        // A 3000×4000 photo shown aspect-fill on a 400×800 screen: scale 0.2, 50 pt cut off each side.
+        let photo = UIGraphicsImageRenderer(size: CGSize(width: 3000, height: 4000), format: { let f = UIGraphicsImageRendererFormat(); f.scale = 1; return f }())
+            .image { ctx in UIColor.white.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 3000, height: 4000)) }
+        let frame = CGRect(x: 100, y: 200, width: 200, height: 300)
+        let cropped = GuidedCamera.crop(photo, to: frame, screen: CGSize(width: 400, height: 800))
+        XCTAssertNotNil(cropped)
+        // Frame plus a 6% margin each side, in photo pixels: (200+24)/0.2 × (300+36)/0.2.
+        XCTAssertEqual(cropped!.size.width, 1120, accuracy: 2)
+        XCTAssertEqual(cropped!.size.height, 1680, accuracy: 2)
+    }
+
+    func testEveryGuideHasAShapeAndAType() {
+        for guide in CaptureGuide.allCases {
+            XCTAssertGreaterThan(guide.frame.width, 0.4)
+            XCTAssertGreaterThan(guide.frame.height, 0.4)
+            XCTAssertNotNil(OutfitSlot(guide.category))
+        }
+    }
+}

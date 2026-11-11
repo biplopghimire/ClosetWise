@@ -9,6 +9,7 @@ struct ClosetWiseApp: App {
     init() {
         FrameHitchMonitor.startIfRequested()
         #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-guidedCamera") { _router = State(initialValue: { let r = AppRouter(); r.tab = .add; return r }()) }
         if ProcessInfo.processInfo.arguments.contains("-checkLink") { _router = State(initialValue: { let r = AppRouter(); r.tab = .check; return r }()) }
         #endif
     }

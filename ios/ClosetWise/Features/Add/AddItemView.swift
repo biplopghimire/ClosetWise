@@ -9,6 +9,8 @@ struct AddItemView: View {
     @State private var progress: GeminiTask?
     @State private var confirm: ConfirmRequest?
     @State private var justAdded: String?
+    /// The guided camera opens on the type used last time (often several of a kind in a row).
+    @State private var lastGuide: CaptureGuide = .top
 
     private var recent: [WardrobeItem] { Array(store.items.suffix(6).reversed()) }
     private var busy: Bool { progress?.isRunning == true }
@@ -18,7 +20,7 @@ struct AddItemView: View {
             VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 6) {
                     ScreenTitle(text: "Add to your closet")
-                    Text("Snap one piece at a time on a plain background. ClosetWise fills in the details.")
+                    Text("Snap one piece at a time, laid flat on a plain background. Fill the outline and ClosetWise does the rest.")
                         .font(.subheadline).foregroundStyle(Theme.secondaryText)
                 }
 
@@ -76,17 +78,24 @@ struct AddItemView: View {
                 pickerItem = nil
             }
         }
+        #if DEBUG
+        // `-guidedCamera`: open the guided camera straight away (the simulator has no camera, but the guide still shows).
+        .onAppear { if ProcessInfo.processInfo.arguments.contains("-guidedCamera") { showCamera = true } }
+        #endif
         .fullScreenCover(isPresented: $showCamera) {
-            CameraPicker { image in Task { await read(image) } }.ignoresSafeArea()
+            GuidedCamera(start: lastGuide) { image, guide in
+                lastGuide = guide
+                Task { await read(image, guide: guide) }
+            }
         }
     }
 
-    private func read(_ image: UIImage) async {
+    private func read(_ image: UIImage, guide: CaptureGuide? = nil) async {
         justAdded = nil
         let task = ItemReader.photoTask()
         withAnimation { progress = task }
         task.begin()
-        let (item, source) = await ItemReader.read(photo: image, store: store, task: task)
+        let (item, source) = await ItemReader.read(photo: image, store: store, task: task, guide: guide)
         try? await Task.sleep(for: .seconds(0.6))
         confirm = ConfirmRequest(item: item, source: source)
     }
