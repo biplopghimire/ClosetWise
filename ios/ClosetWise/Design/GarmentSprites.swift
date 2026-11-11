@@ -78,21 +78,3 @@ struct GarmentSprite: View {
         }
     }
 }
-
-/// An outfit card for the feed: the board (built from cached garment pictures) plus title and reason.
-struct OutfitIdeaCard: View {
-    let outfit: Outfit
-    let size: CGFloat
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            OutfitBoard(outfit: outfit, size: size, sprites: true)
-            Text(outfit.title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink).lineLimit(1)
-            Text(outfit.reason)
-                .font(.caption).foregroundStyle(Theme.secondaryText)
-                .lineLimit(2, reservesSpace: true)
-                .multilineTextAlignment(.leading)
-        }
-        .frame(width: size)
-    }
-}

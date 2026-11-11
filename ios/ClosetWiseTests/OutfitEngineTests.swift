@@ -56,60 +56,110 @@ final class OutfitEngineTests: XCTestCase {
     }
 
     @MainActor
-    private func scroll(_ feed: OutfitFeed, to target: Int) async throws {
-        for _ in 0..<2000 where feed.count < target {
-            feed.loadMore()
-            try await Task.sleep(for: .milliseconds(2))
-        }
-    }
-
-    @MainActor
-    func testFeedIsEndlessVariedAndDropsDislikes() async throws {
-        let signals = StyleSignals(weather: weather(feels: 18))
-        let feed = OutfitFeed()
-        feed.reset(items: closet, signals: signals)
-        try await scroll(feed, to: 10)
-        XCTAssertGreaterThanOrEqual(feed.count, 10, "first page arrives from the background ranking")
-
-        let first = feed.rounds[0].entries[0].outfit
-        feed.drop(disliked: [first.id])
-        XCTAssertFalse(feed.rounds.flatMap(\.entries).contains { $0.outfit.id == first.id })
-
-        // Scroll well past everything the closet can make: the feed keeps going.
-        let total = OutfitEngine.rank(from: closet, signals: signals).count
-        try await scroll(feed, to: total + 40)
-        XCTAssertGreaterThanOrEqual(feed.count, total + 40, "the feed never runs dry")
-        XCTAssertGreaterThan(feed.rounds.count, 1, "a new round starts once everything has been shown")
-        XCTAssertFalse(feed.rounds.flatMap(\.entries).contains { $0.outfit.id == first.id }, "turned-down outfits stay gone")
-
-        let firstRound = feed.rounds[0].entries.map(\.outfit.id)
-        XCTAssertEqual(Set(firstRound).count, firstRound.count, "no repeats within a round")
-        XCTAssertEqual(Set(feed.rounds.flatMap(\.entries).map(\.id)).count, feed.count, "every card has its own id")
-        let shown = feed.rounds[0].entries.map(\.outfit)
-        let similar = zip(shown, shown.dropFirst()).prefix(20)
-            .filter { Set($0.pieces.map(\.id)).intersection($1.pieces.map(\.id)).count >= 2 }.count
-        XCTAssertLessThanOrEqual(similar, 4, "neighbours rarely share most of their pieces")
-    }
-
-    @MainActor
-    func testBigClosetFeedKeepsFindingNewOutfits() async throws {
-        var big: [WardrobeItem] = []
-        for i in 0..<8 { big += SampleData.wardrobe.map { var x = $0; x.id = UUID(); x.name += " \(i)"; return x } }
-        let feed = OutfitFeed()
-        feed.reset(items: big, signals: StyleSignals())
-        try await scroll(feed, to: 400)
-        let ids = feed.rounds[0].entries.map(\.outfit.id)
-        XCTAssertGreaterThanOrEqual(ids.count, 400)
-        XCTAssertEqual(Set(ids).count, ids.count, "a big closet keeps producing outfits it hasn't shown")
-    }
-
-    @MainActor
     func testGarmentsAreDrawnOnceAndReused() {
         let tee = SampleData.blackTee
         let slot = OutfitBoard.slot(for: tee.category, size: 170)
         let first = GarmentSprites.shared.image(tee, size: slot)
         XCTAssertNotNil(first)
         XCTAssertTrue(GarmentSprites.shared.image(tee, size: slot) === first, "second card reuses the same picture")
+    }
+
+    // MARK: Engine v2
+
+    private let dress = WardrobeItem(name: "Black slip dress", category: .dress, kind: .skirt, color: "black", hex: 0x1D1D1F,
+                                     material: "satin", fit: .fitted, style: "smart casual", formality: 3)
+    private let cap = WardrobeItem(name: "Navy cap", category: .accessory, kind: .shoes, color: "navy", hex: 0x23324F,
+                                   material: "cotton", fit: .regular, style: "casual", formality: 1)
+
+    func testEveryPieceGetsOutfitsIncludingDressesAndAccessories() {
+        let closet = SampleData.wardrobe + [dress, cap]
+        for item in closet {
+            let outfits = OutfitEngine.outfits(with: item, from: closet)
+            XCTAssertGreaterThanOrEqual(outfits.count, 3, "\(item.name) should have outfits")
+            XCTAssertTrue(outfits.allSatisfy { $0.contains(item) }, "every outfit for \(item.name) includes it")
+            XCTAssertEqual(Set(outfits.map(\.id)).count, outfits.count)
+        }
+        let dressLooks = OutfitEngine.outfits(with: dress, from: closet)
+        XCTAssertTrue(dressLooks.allSatisfy { $0.top == nil && $0.bottom == nil && $0.dress?.id == dress.id })
+    }
+
+    func testOutfitsWithAPieceIgnoreTodaysWeather() {
+        let shorts = SampleData.denimShorts
+        let freezing = StyleSignals(weather: weather(feels: -5))
+        XCTAssertFalse(OutfitEngine.outfits(with: shorts, from: closet, signals: freezing).isEmpty,
+                       "an item's own page still shows how to wear it")
+    }
+
+    func testStyleOutweighsUnwornPieces() {
+        // The olive knit and denim shorts are the longest unworn; a minimal-neutrals user should still get neutrals first.
+        var prefs = StylePreferences()
+        prefs.vibes = ["Minimal"]
+        prefs.avoidColors = ["green"]
+        let top = OutfitEngine.rank(from: closet, signals: StyleSignals(preferences: prefs)).prefix(10)
+        XCTAssertFalse(top.contains { $0.pieces.contains { $0.color == "green" } }, "an avoided colour stays out of the top ideas")
+    }
+
+    func testShoesMatchTheRestOfTheOutfit() {
+        let polished = OutfitEngine.rank(from: closet, signals: StyleSignals(occasion: .smart)).prefix(8)
+        XCTAssertFalse(polished.isEmpty)
+        XCTAssertTrue(polished.allSatisfy { o in o.shoes.formality >= 2 }, "smart looks don't pair with flip-flop-level shoes")
+        XCTAssertFalse(polished.contains { $0.pieces.contains { $0.kind == .hoodie } }, "no hoodies in smart looks")
+        let lounge = OutfitEngine.rank(from: closet, signals: StyleSignals(occasion: .lounge))
+        XCTAssertTrue(lounge.allSatisfy { $0.pieces.allSatisfy { $0.formality <= 2 } })
+    }
+
+    func testDailySuggestionRotatesButIsStableWithinADay() {
+        let days = (0..<10).map { OutfitEngine.suggest(from: closet, limit: 1, seed: UInt64($0)).first!.id }
+        XCTAssertGreaterThanOrEqual(Set(days).count, 4, "Home shows different outfits on different days")
+        XCTAssertEqual(OutfitEngine.suggest(from: closet, limit: 1, seed: 3).first?.id,
+                       OutfitEngine.suggest(from: closet, limit: 1, seed: 3).first?.id, "same day, same outfit")
+    }
+
+    func testRecentlyWornOutfitsSink() {
+        let first = OutfitEngine.rank(from: closet)[0]
+        let signals = StyleSignals(recentlyWorn: [Outfit.comboKey(first.pieces.filter { $0.category != .accessory }.map(\.id))])
+        XCTAssertNotEqual(OutfitEngine.rank(from: closet, signals: signals).first?.id, first.id)
+    }
+
+    func testLockingAPieceAndSwappingOneSlot() {
+        let tee = SampleData.blackTee
+        let looks = OutfitEngine.best(from: closet, locked: [tee], limit: 10, seed: 1)
+        XCTAssertGreaterThanOrEqual(looks.count, 5)
+        XCTAssertTrue(looks.allSatisfy { $0.top?.id == tee.id }, "Shuffle keeps the locked tee")
+        XCTAssertNotEqual(looks.map(\.id), OutfitEngine.best(from: closet, locked: [tee], limit: 10, seed: 2).map(\.id),
+                          "a new shuffle gives a different order")
+
+        let look = looks[0]
+        let shoes = OutfitEngine.alternatives(for: .shoes, in: look, from: closet)
+        XCTAssertEqual(Set(shoes.map(\.id)), Set(closet.filter { $0.category == .shoes }.map(\.id)), "every pair of shoes is reachable")
+        let swapped = OutfitEngine.replacing(.shoes, with: shoes.last!, in: look, from: closet)
+        XCTAssertEqual(swapped?.shoes.id, shoes.last!.id)
+        XCTAssertEqual(swapped?.top?.id, tee.id, "swapping shoes leaves the rest alone")
+
+        let withDress = OutfitEngine.replacing(.dress, with: dress, in: look, from: closet + [dress])
+        XCTAssertNil(withDress?.top)
+        XCTAssertNil(withDress?.bottom)
+        XCTAssertEqual(withDress?.dress?.id, dress.id, "choosing a dress replaces the top and bottom")
+    }
+
+    func testPicksAreGenuinelyDifferentOutfits() {
+        let ranked = OutfitEngine.rank(from: closet)
+        let picks = OutfitEngine.picks(from: ranked, limit: 10)
+        XCTAssertGreaterThanOrEqual(picks.count, 5)
+        XCTAssertEqual(picks.first?.id, ranked.first?.id, "pick #1 is the top-ranked outfit")
+        let core = { (o: Outfit) in Set(o.pieces.filter { [.top, .bottom, .dress, .shoes].contains($0.category) }.map(\.id)) }
+        for (i, a) in picks.enumerated() {
+            for b in picks.prefix(i) {
+                XCTAssertGreaterThanOrEqual(core(a).subtracting(core(b)).count, 2,
+                                            "\(a.pieces.map(\.name)) is too close to \(b.pieces.map(\.name))")
+            }
+        }
+
+        // With the top locked, picks still change both the bottom and the shoes.
+        let tee = SampleData.blackTee
+        let locked = OutfitEngine.picks(from: OutfitEngine.ranking(from: closet, locked: [tee]).outfits, fixed: [tee.id], limit: 10)
+        XCTAssertTrue(locked.allSatisfy { $0.top?.id == tee.id })
+        XCTAssertGreaterThanOrEqual(locked.count, 2)
     }
 
     func testWarmthTargetsRiseAsItGetsColder() {

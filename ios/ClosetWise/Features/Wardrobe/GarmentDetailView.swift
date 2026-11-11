@@ -13,6 +13,14 @@ struct GarmentDetailView: View {
     /// Pieces added from a photo open on the photo; the drawing is one tap away.
     @State private var showPhoto = true
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppRouter.self) private var router
+
+    /// Opens the Outfits tab with this piece locked, so Shuffle builds looks around it.
+    private func styleThis() {
+        router.outfitStart = item
+        router.tab = .outfits
+        dismiss()
+    }
 
     private var showingBack: Bool { cos(angle * .pi / 180) < 0 }
     private var photo: UIImage? { item.photo.flatMap(ClosetStore.photo) }
@@ -62,10 +70,14 @@ struct GarmentDetailView: View {
                     SectionHeader(title: "Outfits with this", trailing: "From your closet")
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 12) {
-                            ForEach(outfits) { OutfitCard(outfit: $0, size: 150) }
+                            ForEach(outfits) { outfit in
+                                Button { styleThis() } label: { OutfitCard(outfit: outfit, size: 150) }
+                                    .buttonStyle(.plain)
+                            }
                         }
                     }
                 }
+                PrimaryButton(title: "Style this piece", systemImage: "wand.and.stars") { styleThis() }
             }
             .padding(Theme.pad)
         }

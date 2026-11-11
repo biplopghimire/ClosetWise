@@ -1,25 +1,24 @@
 import XCTest
 
-/// Measures how smoothly the outfit ideas feed scrolls (hitches = dropped/late frames).
+/// Measures how smoothly the Outfits builder swipes (hitches = dropped/late frames).
 final class OutfitFeedScrollTests: XCTestCase {
-    func testOutfitIdeasScrolling() throws {
+    func testOutfitBuilderSwiping() throws {
         let app = XCUIApplication()
         app.launchArguments = ["-measureHitches"]
         app.launch()
 
-        app.tabBars.buttons["Closet"].tap()
-        let ideas = app.buttons["Outfit ideas"]
-        XCTAssertTrue(ideas.waitForExistence(timeout: 10))
-        ideas.tap()
-        let feed = app.scrollViews.firstMatch
-        XCTAssertTrue(feed.waitForExistence(timeout: 5))
-        sleep(2)   // first page settles
+        app.tabBars.buttons["Outfits"].tap()
+        let shuffle = app.buttons["Next pick"]
+        XCTAssertTrue(shuffle.waitForExistence(timeout: 10))
+        let rows = app.scrollViews
+        sleep(1)
 
         let options = XCTMeasureOptions()
         options.invocationOptions = [.manuallyStop]
         options.iterationCount = 8
         measure(metrics: [XCTOSSignpostMetric.scrollingAndDecelerationMetric], options: options) {
-            for _ in 0..<4 { feed.swipeUp(velocity: .fast) }
+            for i in 0..<4 { rows.element(boundBy: 1 + i % 2).swipeLeft(velocity: .fast) }
+            shuffle.tap()
             stopMeasuring()
         }
         sleep(3)   // let the monitor log its final numbers

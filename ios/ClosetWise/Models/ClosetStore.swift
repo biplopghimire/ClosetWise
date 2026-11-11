@@ -170,8 +170,11 @@ final class ClosetStore {
         return (preferences.vibes + (geminiSummary?.tags ?? learned.tags)).filter { seen.insert($0.lowercased()).inserted }
     }
 
+    /// Today's ideas. Seeded by the day, so Home shows a different strong outfit each day
+    /// (and the same one all day) instead of always the single top scorer.
     func suggestions(limit: Int = 6) -> [Outfit] {
-        OutfitEngine.suggest(from: items, signals: outfitSignals, limit: limit)
+        let day = UInt64(Calendar.current.ordinality(of: .day, in: .era, for: .now) ?? 0)
+        return OutfitEngine.suggest(from: items, signals: outfitSignals, limit: limit, seed: day)
     }
 
     func outfits(with item: WardrobeItem) -> [Outfit] {
@@ -183,6 +186,8 @@ final class ClosetStore {
     var outfitSignals: StyleSignals {
         var s = signals
         s.weather = weather
+        let weekAgo = Date.now.addingTimeInterval(-7 * 86_400)
+        s.recentlyWorn = Set(logs.filter { $0.date > weekAgo }.map { Outfit.comboKey($0.itemIDs) })
         return s
     }
 

@@ -24,7 +24,9 @@ struct UserProfile: Codable, Equatable {
 @MainActor
 @Observable
 final class AppRouter {
-    enum Tab: Hashable { case home, closet, add, check }
+    enum Tab: Hashable { case home, closet, outfits, add, check }
     var tab: Tab = .home
     var closetFilter: ItemCategory?
+    /// A piece to open the Outfits tab on, locked in place ("Style this piece").
+    var outfitStart: WardrobeItem?
 }

@@ -1,21 +1,15 @@
 import SwiftUI
 
-/// Screen 3 · Wardrobe, shown as a closet: a hanging rail, a shelf for bottoms
-/// and shoes, and outfit suggestions built from what's already there.
+/// Screen 3 · Wardrobe, shown as a closet: a hanging rail and a shelf for bottoms and shoes.
+/// Outfits live in their own tab (`OutfitsView`).
 struct ClosetView: View {
     @State private var filter: ItemCategory?
     @State private var selected: UUID?
     @State private var detail: WardrobeItem?
-    @State private var outfitDetail: Outfit?
-    @State private var lower: Lower = .shelf
-
-    private enum Lower: String, CaseIterable { case shelf = "Shelf", outfits = "Outfit ideas" }
 
     @Environment(ClosetStore.self) private var store
     @Environment(AppRouter.self) private var router
     private var items: [WardrobeItem] { store.items }
-    @State private var feed = OutfitFeed()
-    private var weather: WeatherService { WeatherService.shared }
     private let filters: [ItemCategory] = [.top, .outerwear, .bottom, .shoes]
 
     private var hanging: [WardrobeItem] { items.filter { $0.kind.hangs && matches($0) } }
@@ -61,7 +55,7 @@ struct ClosetView: View {
     }
 
     private var closet: some View {
-        ScrollViewReader { proxy in
+        ScrollViewReader { _ in
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 14) {
@@ -89,32 +83,15 @@ struct ClosetView: View {
                     }
                 }
 
-                if filter == nil || !shelved.isEmpty || lower == .outfits {
-                    Picker("Show", selection: $lower) {
-                        ForEach(Lower.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal, Theme.pad)
-
-                    switch lower {
-                    case .shelf:
-                        shelf
-                    case .outfits:
-                        suggestions
-                    }
+                if filter == nil || !shelved.isEmpty {
+                    shelf
                 }
             }
             .padding(.top, 8)
             .padding(.bottom, 24)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { shelfWidth = $0 }
         }
-        #if DEBUG
-        .task { await autoScrollFeedIfRequested(proxy) }
-        #endif
         }
-        .onChange(of: lower) { if lower == .outfits && feed.isEmpty { resetFeed() } }
-        .onChange(of: feedSignature) { if lower == .outfits || !feed.isEmpty { resetFeed() } }
-        .onChange(of: store.dislikedCombos) { feed.drop(disliked: store.dislikedCombos) }
         .sheet(item: $detail) { item in
             GarmentDetailView(
                 item: store.item(item.id) ?? item,   // live, so a photo picked after Buy shows straight away
@@ -124,11 +101,6 @@ struct ClosetView: View {
             )
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
-        }
-        .sheet(item: $outfitDetail) { outfit in
-            OutfitDetailView(outfit: outfit)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
         }
     }
 
@@ -197,97 +169,6 @@ struct ClosetView: View {
                 .frame(minWidth: max(0, shelfWidth - 2 * (Theme.pad - 10)), alignment: .leading)
                 .padding(.horizontal, Theme.pad - 10)
             }
-        }
-    }
-
-    // MARK: Outfit ideas
-
-    /// Changes that should rebuild the ideas: the closet, the stated style, or the weather.
-    private var feedSignature: String {
-        let closet = items.map { "\($0.id)\($0.updatedAt?.timeIntervalSince1970 ?? 0)" }.joined()
-        let p = store.preferences
-        let style = "\(p.vibes)\(p.loveColors)\(p.avoidColors)\(p.dressiness ?? 0)\(p.fits.mapValues(\.rawValue))"
-        let sky = store.weather.map { "\($0.band)\($0.isRainy)\($0.isSnowy)" } ?? "none"
-        return "\(closet.hashValue)|\(style)|\(sky)"
-    }
-
-    #if DEBUG
-    /// Scroll-performance check: `-autoScrollFeed` opens Outfit ideas and scrolls it by itself,
-    /// so frame timing can be measured without a UI-test robot touching the app.
-    private func autoScrollFeedIfRequested(_ proxy: ScrollViewProxy) async {
-        guard ProcessInfo.processInfo.arguments.contains("-autoScrollFeed") else { return }
-        lower = .outfits
-        try? await Task.sleep(for: .seconds(3))
-        var target = 0
-        for _ in 0..<120 {
-            target += 4
-            withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo(target, anchor: .top) }
-            try? await Task.sleep(for: .milliseconds(450))
-        }
-    }
-    #endif
-
-    private func resetFeed() {
-        feed.reset(items: items, signals: store.outfitSignals)
-    }
-
-    private var cardWidth: CGFloat { max(140, (shelfWidth - 2 * Theme.pad - 12) / 2) }
-
-    private var suggestions: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            weatherBanner
-            OutfitIdeasFeed(feed: feed, cardWidth: cardWidth,
-                            hasCloset: !items.isEmpty, hasWeather: store.weather != nil) { outfitDetail = $0 }
-        }
-        .padding(.horizontal, Theme.pad)
-        .onAppear { if feed.isEmpty { resetFeed() } }
-    }
-
-    /// Today's weather, or a way to turn it on.
-    @ViewBuilder private var weatherBanner: some View {
-        if let now = store.weather {
-            HStack(spacing: 12) {
-                Image(systemName: now.symbol).font(.title2).symbolRenderingMode(.multicolor)
-                    .frame(width: 34)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(now.headline).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
-                    Text("\(now.advice). Ideas are picked for it.").font(.caption).foregroundStyle(Theme.secondaryText)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(12)
-            .background(Theme.mint, in: RoundedRectangle(cornerRadius: 14))
-        } else if weather.access == .denied {
-            HStack(spacing: 10) {
-                Image(systemName: "location.slash").foregroundStyle(Theme.secondaryText)
-                Text("Location is off, so ideas don't account for the weather.").font(.caption).foregroundStyle(Theme.secondaryText)
-                Spacer(minLength: 0)
-                Button("Settings") {
-                    if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
-                }
-                .font(.caption.weight(.semibold))
-            }
-            .padding(12)
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.border))
-        } else {
-            Button { Task { await weather.requestAccess() } } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: weather.loading ? "hourglass" : "cloud.sun").font(.title3).foregroundStyle(Theme.primary)
-                        .frame(width: 34)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(weather.loading ? "Checking the weather…" : "Dress for today's weather")
-                            .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
-                        Text(weather.lastError ?? "Use your location so ideas suit the temperature and rain.")
-                            .font(.caption).foregroundStyle(Theme.secondaryText)
-                    }
-                    Spacer(minLength: 0)
-                    Image(systemName: "location.fill").font(.caption).foregroundStyle(Theme.primary)
-                }
-                .padding(12)
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.primary.opacity(0.4)))
-            }
-            .buttonStyle(.plain)
-            .disabled(weather.loading)
         }
     }
 

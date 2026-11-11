@@ -45,6 +45,9 @@ struct RootTabView: View {
             NavigationStack { ClosetView() }
                 .tabItem { Label("Closet", systemImage: "hanger") }
                 .tag(AppRouter.Tab.closet)
+            NavigationStack { OutfitsView() }
+                .tabItem { Label("Outfits", systemImage: "tshirt") }
+                .tag(AppRouter.Tab.outfits)
             NavigationStack { AddItemView() }
                 .tabItem { Label("Add", systemImage: "plus.circle") }
                 .tag(AppRouter.Tab.add)

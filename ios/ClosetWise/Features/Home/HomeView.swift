@@ -144,6 +144,10 @@ struct HomeView: View {
                             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.primary))
                     }
                 }
+                Button { router.tab = .outfits } label: {
+                    Label("More outfits", systemImage: "arrow.right").labelStyle(TrailingIconLabelStyle())
+                        .font(.subheadline.weight(.medium)).foregroundStyle(Theme.primary)
+                }
             }
             .padding(16)
             .background(Theme.mint, in: RoundedRectangle(cornerRadius: 20))
@@ -248,3 +252,10 @@ extension String {
 }
 
 #Preview { NavigationStack { HomeView() }.environment(ClosetStore.preview).environment(AppRouter()) }
+
+/// "More outfits →": text first, icon after.
+private struct TrailingIconLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 4) { configuration.title; configuration.icon }
+    }
+}
