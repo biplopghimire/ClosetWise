@@ -135,7 +135,7 @@ enum GarmentPhoto {
             do {
                 try handler.perform([request])
                 guard let observation = request.results?.first else { return nil }
-                let buffer = try observation.generateMaskedImage(ofInstances: observation.allInstances, from: handler, croppedToInstancesExtent: true)
+                let buffer = try observation.generateMaskedImage(ofInstances: mainInstances(observation), from: handler, croppedToInstancesExtent: true)
                 let ci = CIImage(cvPixelBuffer: buffer)
                 guard let out = CIContext().createCGImage(ci, from: ci.extent) else { return nil }
                 return UIImage(cgImage: out)
@@ -143,6 +143,27 @@ enum GarmentPhoto {
                 return nil
             }
         }.value
+    }
+
+    /// The garment, not the hand holding it or the hanger: keeps the biggest thing found plus
+    /// anything at least a quarter its size (a pair of shoes, a sleeve split off), drops the rest.
+    nonisolated static func mainInstances(_ observation: VNInstanceMaskObservation) -> IndexSet {
+        let all = observation.allInstances
+        guard all.count > 1 else { return all }
+        let mask = observation.instanceMask
+        CVPixelBufferLockBaseAddress(mask, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(mask, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(mask) else { return all }
+        let width = CVPixelBufferGetWidth(mask), height = CVPixelBufferGetHeight(mask)
+        let rowBytes = CVPixelBufferGetBytesPerRow(mask)
+        var counts = [Int: Int]()
+        for y in 0..<height {
+            let row = base.advanced(by: y * rowBytes).assumingMemoryBound(to: UInt8.self)
+            for x in 0..<width where row[x] != 0 { counts[Int(row[x]), default: 0] += 1 }
+        }
+        guard let biggest = counts.values.max(), biggest > 0 else { return all }
+        let kept = IndexSet(counts.filter { all.contains($0.key) && Double($0.value) >= Double(biggest) * 0.25 }.map(\.key))
+        return kept.isEmpty ? all : kept
     }
 
     /// Asks Gemini (via the `gemini` Edge Function) to read the garment's attributes.

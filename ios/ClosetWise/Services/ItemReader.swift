@@ -22,7 +22,8 @@ enum ItemReader {
         ])
     }
 
-    static func read(photo image: UIImage, store: ClosetStore, task: GeminiTask) async -> (WardrobeItem, ConfirmRequest.Source) {
+    /// `guide`: the type picked in the guided camera — used when ClosetWise can't read the photo.
+    static func read(photo image: UIImage, store: ClosetStore, task: GeminiTask, guide: CaptureGuide? = nil) async -> (WardrobeItem, ConfirmRequest.Source) {
         task.step(0)
         let cut = await GarmentPhoto.cutout(image)
         task.step(1)
@@ -36,6 +37,10 @@ enum ItemReader {
             if let color = DominantColor.of(cut ?? image) {
                 item.hex = color.hex
                 item.color = color.name
+            }
+            if let guide {
+                item.category = guide.category
+                item.kind = guide.kind
             }
         }
         task.step(2)
